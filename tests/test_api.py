@@ -58,6 +58,7 @@ def test_api_status_endpoint(client):
     assert data["status"] == "HEALTHY"
     assert "working_memory" in data
     assert "engine" in data["kg_summary"]
+    assert data["engine"] in ("Neo4j", "NetworkX Embedded")
 
 
 def test_api_memory_endpoint(client):

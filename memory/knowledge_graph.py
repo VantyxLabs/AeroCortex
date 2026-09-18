@@ -319,8 +319,8 @@ class Neo4jBackend:
         self.driver = GraphDatabase.driver(
             config.neo4j.uri,
             auth=(config.neo4j.user, config.neo4j.password),
-            connection_timeout=0.5,
-            connection_acquisition_timeout=1.0,
+            connection_timeout=3.0,
+            connection_acquisition_timeout=3.0,
             max_transaction_retry_time=0.0,
         )
         if not self.ping():

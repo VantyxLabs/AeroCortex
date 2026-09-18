@@ -206,10 +206,12 @@ def receive_telemetry(telemetry: UAVTelemetry):
 @app.get("/status")
 def get_system_status():
     snapshot = graph.working_memory.get_snapshot()
+    kg_summary = graph.memory_agent.knowledge_graph.get_summary()
     return {
         "status": "HEALTHY",
+        "engine": kg_summary.get("engine"),
         "working_memory": snapshot,
-        "kg_summary": graph.memory_agent.knowledge_graph.get_summary()
+        "kg_summary": kg_summary,
     }
 
 
