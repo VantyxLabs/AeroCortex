@@ -44,6 +44,21 @@ def test_semantic_memory_matching():
     assert "SWITCH_TO_VIO" in rules[0].action
 
 
+def test_semantic_memory_falls_back_to_json(tmp_path, monkeypatch):
+    class DownStore:
+        available = False
+
+        def get_rules_sync(self):
+            raise RuntimeError("mongo down")
+
+    monkeypatch.setattr("memory.semantic_memory.get_document_store", lambda: DownStore())
+    path = tmp_path / "semantic_rules.json"
+    sm = SemanticMemory(file_path=str(path))
+    rules = sm.match_rules("GPS_INTERFERENCE")
+    assert len(rules) >= 1
+    assert path.exists()
+
+
 def test_knowledge_graph_traversal():
     kg = KnowledgeGraph()
     paths = kg.query_action_relevance("GPS_INTERFERENCE")

@@ -235,11 +235,12 @@ async def get_missions_history(
     skip: int = Query(0, ge=0),
 ):
     history = await document_store.list_missions(limit=limit, skip=skip)
+    total = await document_store.count_missions()
     for item in history:
         if "_id" in item:
             item["_id"] = str(item["_id"])
     return {
-        "total_events": len(history),
+        "total_events": total,
         "limit": limit,
         "skip": skip,
         "history": history,

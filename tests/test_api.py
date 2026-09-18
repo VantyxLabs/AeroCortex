@@ -76,6 +76,33 @@ def test_api_missions_endpoint(client):
     data = res.json()
     assert "history" in data
     assert "total_events" in data
+    assert data["limit"] == 10
+    assert data["skip"] == 0
+    assert "persisted" in data
+    assert isinstance(data["history"], list)
+
+
+def test_api_missions_when_mongo_down(monkeypatch):
+    class DownStore:
+        available = False
+
+        async def list_missions(self, limit=50, skip=0):
+            return []
+
+        async def count_missions(self):
+            return 0
+
+    import api.telemetry_api as telemetry_api
+
+    monkeypatch.setattr(telemetry_api, "document_store", DownStore())
+    with TestClient(app) as c:
+        c.headers.update({"X-API-Key": config.api_key})
+        res = c.get("/missions", params={"limit": 5, "skip": 0})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["history"] == []
+        assert data["total_events"] == 0
+        assert data["persisted"] is False
 
 
 def test_api_simulate_endpoint(client):
