@@ -68,6 +68,8 @@ def test_api_memory_endpoint(client):
     assert "episodic_experiences_count" in data
     assert "semantic_rules_count" in data
     assert "knowledge_graph" in data
+    assert "last_retrieval" in data
+    assert "candidates" in data["last_retrieval"]
 
 
 def test_api_missions_endpoint(client):

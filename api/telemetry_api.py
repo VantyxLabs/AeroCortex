@@ -220,12 +220,29 @@ def get_memory_state():
     rules = [r.model_dump() for r in graph.memory_agent.semantic_memory.get_all_rules()]
     kg_summary = graph.memory_agent.knowledge_graph.get_summary()
     chroma_count = graph.memory_agent.episodic_memory.vector_store.count()
+    last = graph.memory_agent.last_context
+    candidates = []
+    if last:
+        for item in last.retrieved_experiences:
+            candidates.append({
+                "episode_id": item.episode_id,
+                "action": item.experience.action,
+                "vector_similarity": item.vector_similarity,
+                "graph_relevance": item.graph_relevance,
+                "final_score": item.final_score,
+                "hydrated_from_mongo": item.hydrated_from_mongo,
+            })
 
     return {
         "episodic_experiences_count": chroma_count,
         "semantic_rules_count": len(rules),
         "semantic_rules": rules,
-        "knowledge_graph": kg_summary
+        "knowledge_graph": kg_summary,
+        "last_retrieval": {
+            "top_recommended_action": last.top_recommended_action if last else None,
+            "retrieval_latency_ms": last.retrieval_latency_ms if last else 0.0,
+            "candidates": candidates,
+        },
     }
 
 
