@@ -31,6 +31,71 @@ def test_api_healthz_no_key_required():
         assert "neo4j" in data["dependencies"]
         assert "chroma" in data["dependencies"]
         assert "ollama" in data["dependencies"]
+        assert "version" in data
+        if res.status_code == 200:
+            assert data["status"] in ("ok", "degraded")
+        else:
+            assert data["status"] == "unavailable"
+
+
+def test_api_docs_no_key_required():
+    with TestClient(app) as c:
+        res = c.get("/docs")
+        assert res.status_code == 200
+
+
+def test_healthz_degraded_when_mongo_down(monkeypatch):
+    import api.telemetry_api as telemetry_api
+
+    async def mongo_down():
+        return False
+
+    with TestClient(app) as c:
+        monkeypatch.setattr(telemetry_api.document_store, "ping", mongo_down)
+        monkeypatch.setattr(
+            telemetry_api.graph.memory_agent.episodic_memory.vector_store, "ping", lambda: True
+        )
+        res = c.get("/healthz")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["status"] == "degraded"
+        assert data["dependencies"]["mongo"] == "down"
+
+
+def test_healthz_503_when_mongo_and_chroma_down(monkeypatch):
+    import api.telemetry_api as telemetry_api
+
+    async def mongo_down():
+        return False
+
+    with TestClient(app) as c:
+        monkeypatch.setattr(telemetry_api.document_store, "ping", mongo_down)
+        monkeypatch.setattr(
+            telemetry_api.graph.memory_agent.episodic_memory.vector_store, "ping", lambda: False
+        )
+        res = c.get("/healthz")
+        assert res.status_code == 503
+        data = res.json()
+        assert data["status"] == "unavailable"
+        assert data["dependencies"]["mongo"] == "down"
+        assert data["dependencies"]["chroma"] == "down"
+
+
+def test_compose_api_waits_for_healthy_dependencies():
+    from pathlib import Path
+
+    import yaml
+
+    compose = yaml.safe_load(Path("docker-compose.yml").read_text(encoding="utf-8"))
+    assert "version" not in compose
+    for name in ("mongo", "neo4j", "ollama", "api", "dashboard"):
+        assert name in compose["services"]
+        assert "healthcheck" in compose["services"][name] or name == "dashboard"
+    deps = compose["services"]["api"]["depends_on"]
+    assert deps["mongo"]["condition"] == "service_healthy"
+    assert deps["neo4j"]["condition"] == "service_healthy"
+    assert deps["ollama"]["condition"] == "service_healthy"
+    assert compose["services"]["api"].get("env_file") in (".env", [".env"])
 
 
 def test_api_rejects_missing_key():
