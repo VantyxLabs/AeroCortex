@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aerocortex"
+version = "1.0.0"
+description = "An Experience-Aware Cognitive Memory Architecture for Autonomous Edge Systems"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "AeroCortex Team (AB16)", email = "ab16@amrita.edu" }
+]
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn>=0.28.0",
+    "pydantic>=2.6.0",
+    "pyyaml>=6.0.1",
+    "python-dotenv>=1.0",
+    "streamlit>=1.32.0",
+    "chromadb>=0.4.24",
+    "networkx>=3.2.1",
+    "neo4j>=5.18.0",
+    "pymongo>=4.6",
+    "motor>=3.4",
+    "numpy>=1.26.0",
+    "pandas>=2.2.0",
+    "plotly>=5.20.0",
+    "requests>=2.31.0",
+    "httpx>=0.27.0",
+    "pytest>=8.0.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0"
+]
+
+[tool.setuptools.packages.find]
+include = ["agents*", "api*", "config*", "dashboard*", "llm*", "memory*", "orchestration*", "safety*", "sdk*", "simulation*"]
