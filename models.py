@@ -1,6 +1,6 @@
 from enum import Enum
-from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, Field
+from typing import Any, Dict, List, Literal, Optional
+from pydantic import BaseModel, Field, field_validator
 import time
 
 class GPSStatus(str, Enum):
@@ -119,6 +119,23 @@ class RecoveryPlan(BaseModel):
     source: str = "Planner"
     plan_latency_ms: float = 0.0
 
+
+class LLMRecoveryPlan(BaseModel):
+    """Strict schema for Ollama JSON — missing fields fail validation."""
+    action: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+    steps: List[str] = Field(min_length=1)
+    expected_outcome: str = Field(min_length=1)
+    confidence: float = Field(ge=0.0, le=1.0)
+    risk_level: Literal["LOW", "MEDIUM", "HIGH"]
+
+    @field_validator("risk_level", mode="before")
+    @classmethod
+    def _normalize_risk(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip().upper()
+        return value
+
 class SafetyVerdict(BaseModel):
     approved: bool = True
     reason: str = "Plan satisfies all flight envelope constraints"
@@ -141,5 +158,6 @@ class MissionOutcome(BaseModel):
 __all__ = [
     "GPSStatus", "CommsStatus", "MissionPhase", "FailureType", "SeverityLevel",
     "UAVTelemetry", "SituationReport", "EpisodicExperience", "RetrievedExperience",
-    "SemanticRule", "HybridMemoryContext", "RecoveryPlan", "SafetyVerdict", "MissionOutcome"
+    "SemanticRule", "HybridMemoryContext", "RecoveryPlan", "LLMRecoveryPlan",
+    "SafetyVerdict", "MissionOutcome"
 ]
