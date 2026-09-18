@@ -1,0 +1,59 @@
+# AeroCortex Configuration File
+# Secrets and connection strings belong in .env — this file is defaults only.
+
+system:
+  app_name: "AeroCortex Cognitive Edge Architecture"
+  version: "1.0.0"
+  log_level: "INFO"
+  offline_mode: true
+  device_target: "edge_uav" # "edge_uav" or "raspberry_pi_5"
+
+flight_envelope:
+  min_battery_percent: 15.0
+  critical_battery_percent: 10.0
+  max_altitude_m: 150.0
+  min_altitude_m: 5.0
+  max_velocity_mps: 20.0
+  max_wind_speed_mps: 12.0
+  max_gps_hdop: 3.0
+  min_comms_rssi_dbm: -85.0
+  geofence:
+    min_lat: 10.9000
+    max_lat: 11.1500
+    min_lon: 76.8500
+    max_lon: 77.1000
+
+memory:
+  hybrid_weights:
+    vector_similarity: 0.6
+    graph_relevance: 0.4
+  top_k_episodes: 3
+  chroma_db_dir: "data/knowledge/chroma"
+  chroma_collection: "aerocortex_episodes"
+  semantic_rules_path: "data/knowledge/semantic_rules.json"
+  knowledge_graph_path: "data/knowledge/knowledge_graph.json"
+  reinforcement_rate: 0.2
+
+neo4j:
+  uri: "bolt://localhost:7687"
+  user: "neo4j"
+  enabled: false
+
+mongo:
+  uri: "mongodb://localhost:27017"
+  db_name: "aerocortex"
+
+llm:
+  provider: "ollama"
+  base_url: "http://localhost:11434"
+  model: "gemma3:latest"
+  timeout_seconds: 5.0
+  connect_timeout_seconds: 0.3
+  min_confidence_threshold: 0.70
+
+api:
+  host: "0.0.0.0"
+  port: 8000
+
+dashboard:
+  port: 8501
