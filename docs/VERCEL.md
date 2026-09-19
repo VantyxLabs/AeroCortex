@@ -2,6 +2,8 @@
 
 Vercel hosts the **UI only**. The Python API stays on **Render**. Same-origin `/api` on Vercel is rewritten to your Render service (no CORS hassle).
 
+Root `package.json` + `.vercelignore` force a **static** build so Vercel does not bundle the Python `api/` package as a serverless function.
+
 ```
 Browser → Vercel (static SPA) → Render (FastAPI + Mongo/Neo4j/Groq/Pinecone)
 ```

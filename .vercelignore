@@ -1,11 +1,38 @@
-# Vercel
+# Keep Vercel static-only — never upload the Python API stack
 .vercel
 public
 
-# Local / secrets
+# Secrets / local
 .env
-*.pyc
-__pycache__/
-.pytest_cache/
+.env.*
+!.env.example
+
+# Python app (conflicts with Vercel /api serverless)
+api/
+agents/
+memory/
+orchestration/
+safety/
+llm/
+simulation/
+sdk/
+tests/
+matlab/
+config/
 data/
-*.sqlite3
+__pycache__/
+**/__pycache__/
+*.py
+*.pyc
+pyproject.toml
+requirements.txt
+uv.lock
+Pipfile
+Pipfile.lock
+CACHEDIR.TAG
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Keep dashboard sources + scripts for the build
+# (dashboard/, scripts/, package.json, vercel.json are NOT ignored)

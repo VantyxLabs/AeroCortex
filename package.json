@@ -1,0 +1,8 @@
+{
+  "name": "aerocortex-dashboard",
+  "private": true,
+  "description": "Static Minimalist Monochrome SPA for Vercel (API stays on Render)",
+  "scripts": {
+    "build": "node scripts/vercel-prepare.js"
+  }
+}
