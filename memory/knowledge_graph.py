@@ -611,6 +611,35 @@ class KnowledgeGraph:
         except Exception:
             return False
 
+    def reconnect(self) -> str:
+        """Retry Bolt after compose deps are healthy so we do not stay on NetworkX."""
+        if not config.neo4j.enabled:
+            return self.engine
+        if self.engine == "neo4j" and self.ping():
+            try:
+                self._neo.ensure_constraints()
+                if self._neo.node_count() == 0:
+                    self._neo.seed_ontology()
+            except Exception as exc:
+                logger.warning("Neo4j seed/constraints failed: %s", exc)
+            return self.engine
+        try:
+            if self._neo:
+                self._neo.close()
+            neo = Neo4jBackend()
+            self._neo = neo
+            self._backend = neo
+            self.engine = "neo4j"
+            if neo.node_count() == 0:
+                neo.seed_ontology()
+            logger.info("Knowledge graph engine: Neo4j")
+        except Exception as exc:
+            logger.warning("Neo4j unavailable, using NetworkX: %s", exc)
+            self._backend = self._nx
+            self.engine = "networkx"
+            self._neo = None
+        return self.engine
+
     def close(self) -> None:
         if self._neo:
             self._neo.close()

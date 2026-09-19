@@ -1,4 +1,3 @@
-import hashlib
 import logging
 import secrets
 from contextlib import asynccontextmanager
@@ -33,12 +32,11 @@ async def lifespan(app: FastAPI):
         logger.warning("Mongo startup failed: %s", exc)
 
     kg = graph.memory_agent.knowledge_graph
-    if kg.engine == "neo4j":
-        try:
-            if kg._neo and kg._neo.node_count() == 0:
-                kg._neo.seed_ontology()
-        except Exception as exc:
-            logger.warning("Neo4j seed failed: %s", exc)
+    try:
+        engine = kg.reconnect()
+        logger.info("Knowledge graph engine after startup: %s", engine)
+    except Exception as exc:
+        logger.warning("Neo4j reconnect failed: %s", exc)
 
     try:
         graph.memory_agent.episodic_memory.vector_store.count()
@@ -76,9 +74,7 @@ EXEMPT_PATHS = {"/healthz", "/docs", "/openapi.json", "/redoc"}
 def _api_key_ok(provided: str, expected: str) -> bool:
     if not expected:
         return True
-    provided_digest = hashlib.sha256(provided.encode("utf-8")).digest()
-    expected_digest = hashlib.sha256(expected.encode("utf-8")).digest()
-    return secrets.compare_digest(provided_digest, expected_digest)
+    return secrets.compare_digest(provided, expected)
 
 
 @app.middleware("http")
