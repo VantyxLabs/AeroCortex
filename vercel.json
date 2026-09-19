@@ -1,0 +1,48 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "buildCommand": "node scripts/vercel-prepare.js",
+  "outputDirectory": "public",
+  "rewrites": [
+    {
+      "source": "/api/healthz",
+      "destination": "https://aerocortex.onrender.com/healthz"
+    },
+    {
+      "source": "/api/memory",
+      "destination": "https://aerocortex.onrender.com/memory"
+    },
+    {
+      "source": "/api/status",
+      "destination": "https://aerocortex.onrender.com/status"
+    },
+    {
+      "source": "/api/simulate",
+      "destination": "https://aerocortex.onrender.com/simulate"
+    },
+    {
+      "source": "/api/reset",
+      "destination": "https://aerocortex.onrender.com/reset"
+    },
+    {
+      "source": "/api/missions",
+      "destination": "https://aerocortex.onrender.com/missions"
+    },
+    {
+      "source": "/api/telemetry",
+      "destination": "https://aerocortex.onrender.com/telemetry"
+    },
+    {
+      "source": "/api/:path*",
+      "destination": "https://aerocortex.onrender.com/:path*"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }
+      ]
+    }
+  ]
+}

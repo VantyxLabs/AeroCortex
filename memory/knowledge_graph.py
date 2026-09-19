@@ -350,7 +350,9 @@ class Neo4jBackend:
             host = primary_uri.split("://", 1)[1]
             attempts.append((f"bolt+s://{host}", config.neo4j.user, config.neo4j.password))
         local_uri = "bolt://localhost:7687"
-        if not any(u == local_uri for u, _, _ in attempts):
+        # Skip local Docker fallback on cloud hosts (Render/Railway have no Neo4j on localhost).
+        skip_local = primary_uri.startswith(("neo4j+s://", "neo4j+ssc://", "bolt+s://"))
+        if not skip_local and not any(u == local_uri for u, _, _ in attempts):
             attempts.append((local_uri, "neo4j", "change-me-local-dev-password"))
             # also try the configured password against local (compose may use NEO4J_PASSWORD)
             if config.neo4j.password and config.neo4j.password != "change-me-local-dev-password":

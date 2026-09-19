@@ -87,6 +87,7 @@ services:
     env_file: .env
     environment:
       DASHBOARD_PORT: "8501"
+      DASHBOARD_API_URL: ${DASHBOARD_API_URL:-http://localhost:8000}
     ports:
       - "8501:8501"
     depends_on:

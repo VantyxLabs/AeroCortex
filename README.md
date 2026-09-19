@@ -66,7 +66,7 @@ flowchart TD
     end
 
     subgraph Control_Tier ["3. Monitoring & Mission Control"]
-        Dashboard["Streamlit 8-Section Dashboard"] <--> API
+        Dashboard["Monochrome SPA Dashboard"] <--> API
     end
 ```
 
@@ -107,7 +107,13 @@ aerocortex/
 ├── api/
 │   └── telemetry_api.py          # FastAPI application with all 6 required endpoints
 ├── dashboard/
-│   └── app.py                    # Streamlit mission control dashboard (all 8 sections)
+│   ├── server.py                 # FastAPI host for Minimalist Monochrome SPA
+│   └── static/                   # HTML / CSS / JS live mission control
+├── docs/
+│   └── VERCEL.md                 # Deploy SPA to Vercel (proxy to Render API)
+├── scripts/
+│   └── vercel-prepare.js         # Copies dashboard/static → public for Vercel
+├── vercel.json                   # Vercel build + /api rewrites to Render
 ├── data/
 │   ├── missions/                 # Evaluation reports and mission outcome logs
 │   └── knowledge/                # Default semantic rules, knowledge graph seeds, ChromaDB storage
@@ -212,11 +218,44 @@ The API does not start until Neo4j Bolt and Mongo accept connections, so it shou
 
 ### Cloud hosting
 
-**Recommended:** Railway or Render (Docker) + [MongoDB Atlas](https://www.mongodb.com/atlas) + [Neo4j AuraDB](https://neo4j.com/cloud/aura-free/) + [Pinecone](https://www.pinecone.io/) + [Groq](https://console.groq.com/).
+**Recommended split:**
+
+| Piece | Host |
+|-------|------|
+| FastAPI + Mongo / Neo4j / Groq / Pinecone | [Render](https://render.com) (Docker) or Railway |
+| Minimalist Monochrome dashboard | [Vercel](https://vercel.com) (static SPA) or local `python main.py --dashboard` |
+
+Cloud data services: [MongoDB Atlas](https://www.mongodb.com/atlas) + [Neo4j AuraDB](https://neo4j.com/cloud/aura-free/) + [Pinecone](https://www.pinecone.io/) + [Groq](https://console.groq.com/).
 
 The REST API is designed to run **with internet**. Set `GROQ_API_KEY` and `PINECONE_API_KEY` in `.env`. Create a Pinecone serverless index named `aerocortex-episodes` (dimension **64**, metric **cosine**). Groq is the planner; Ollama is not required in the cloud.
 
 **Ollama + Chroma are Raspberry Pi / offline fallbacks.** If Groq is unreachable the planner uses Ollama, then the deterministic reasoner. If Pinecone is unreachable the vector store uses local Chroma. Do not assume a cloud host can call `localhost:11434`.
+
+#### Local API + dashboard (two terminals)
+
+```bash
+# Terminal 1 — REST API (default port from .env, e.g. 8001)
+python main.py --api
+
+# Terminal 2 — SPA on :8501 (proxies /api → DASHBOARD_API_URL)
+python main.py --dashboard
+```
+
+Open `http://localhost:8501`. Keep `DASHBOARD_API_URL=http://127.0.0.1:8001` in `.env` when using the local API.
+
+#### Deploy dashboard to Vercel (API stays on Render)
+
+1. Ensure the API is live on Render (e.g. `https://aerocortex.onrender.com`) with `API_KEY` set.
+2. Push this repo to GitHub, then import it at [vercel.com/new](https://vercel.com/new) (Framework: **Other**).
+3. Build command / output are already in `vercel.json` (`node scripts/vercel-prepare.js` → `public`).
+4. Set Vercel env vars, then redeploy:
+
+| Variable | Value |
+|----------|--------|
+| `AEROCORTEX_API_URL` | `https://aerocortex.onrender.com` |
+| `AEROCORTEX_API_KEY` | same as Render `API_KEY` |
+
+Full walkthrough: [docs/VERCEL.md](docs/VERCEL.md).
 
 ---
 
@@ -236,13 +275,12 @@ Runs the 5 repeatable experiments comparing the conventional baseline controller
 python evaluate.py
 ```
 
-### 3. Interactive Streamlit Mission Dashboard
-Launches the full 8-section Mission Control interface with real-time charts and fault injectors:
+### 3. Minimalist Monochrome Mission Dashboard
+Live SPA that talks to the REST API (health, simulate, memory, reset):
 ```bash
 python main.py --dashboard
-# Or: streamlit run dashboard/app.py
 ```
-Open your browser at `http://localhost:8501`.
+Open your browser at `http://localhost:8501`. Set `DASHBOARD_API_URL` (default via `/config.json`) to the browser-reachable API, e.g. `http://127.0.0.1:8001`.
 
 ### 4. FastAPI Telemetry Gateway
 Starts the HTTP REST server for external flight controllers or MATLAB digital twin:

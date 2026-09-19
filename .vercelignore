@@ -1,0 +1,11 @@
+# Vercel
+.vercel
+public
+
+# Local / secrets
+.env
+*.pyc
+__pycache__/
+.pytest_cache/
+data/
+*.sqlite3

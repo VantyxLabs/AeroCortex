@@ -1,9 +1,12 @@
+import asyncio
 import logging
 import secrets
+import time
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -74,7 +77,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-EXEMPT_PATHS = {"/healthz", "/docs", "/openapi.json", "/redoc"}
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+EXEMPT_PATHS = {"/", "/healthz", "/docs", "/openapi.json", "/redoc"}
 
 
 def _api_key_ok(provided: str, expected: str) -> bool:
@@ -159,14 +170,25 @@ def root():
     }
 
 
-@app.get("/healthz")
-async def healthz():
-    mongo_ok = await document_store.ping()
+_HEALTH_CACHE: Dict[str, Any] = {"ts": 0.0, "payload": None, "status_code": 200}
+_HEALTH_TTL_S = 8.0
+
+
+def _compute_health() -> tuple[int, Dict[str, Any]]:
+    """Blocking dependency checks — always run via asyncio.to_thread."""
+    try:
+        mongo_ok = asyncio.run(document_store.ping())
+    except Exception:
+        mongo_ok = False
+
     vs = graph.memory_agent.episodic_memory.vector_store
     vector_health = vs.health()
     kg = graph.memory_agent.knowledge_graph
-    kg.reconnect()
     neo_ok = kg.engine == "neo4j" and kg.ping()
+    if not neo_ok:
+        kg.reconnect()
+        neo_ok = kg.engine == "neo4j" and kg.ping()
+
     groq = GroqClient()
     groq_ok = groq.ping()
     ollama_ok = OllamaClient().ping()
@@ -196,22 +218,34 @@ async def healthz():
     )
     llm_degraded = (groq.is_configured and not groq_ok) or (not groq.is_configured and not ollama_ok)
     degraded = (not mongo_ok) or (not neo_ok) or vector_degraded or llm_degraded
-    if not vector_ok and not mongo_ok:
-        return JSONResponse(
-            status_code=503,
-            content={
-                "status": "unavailable",
-                "dependencies": dependencies,
-                "version": config.system.version,
-            },
-        )
-    return {
-        "status": "degraded" if degraded else "ok",
+    payload = {
+        "status": "unavailable" if (not vector_ok and not mongo_ok) else ("degraded" if degraded else "ok"),
         "dependencies": dependencies,
         "version": config.system.version,
         "engine": kg.get_summary().get("engine"),
         "vector_engine": vector_health.get("engine"),
     }
+    status_code = 503 if payload["status"] == "unavailable" else 200
+    return status_code, payload
+
+
+@app.get("/healthz")
+async def healthz():
+    now = time.monotonic()
+    cached = _HEALTH_CACHE.get("payload")
+    if cached is not None and (now - float(_HEALTH_CACHE["ts"])) < _HEALTH_TTL_S:
+        code = int(_HEALTH_CACHE["status_code"])
+        if code != 200:
+            return JSONResponse(status_code=code, content=cached)
+        return cached
+
+    status_code, payload = await asyncio.to_thread(_compute_health)
+    _HEALTH_CACHE["ts"] = now
+    _HEALTH_CACHE["payload"] = payload
+    _HEALTH_CACHE["status_code"] = status_code
+    if status_code != 200:
+        return JSONResponse(status_code=status_code, content=payload)
+    return payload
 
 
 @app.post("/telemetry")

@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AeroCortex — Mission Control</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Playfair+Display:ital,wght@0,500;0,700;1,500&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/tokens.css?v=7" />
+  <link rel="stylesheet" href="/static/css/app.css?v=7" />
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <div class="shell">
+    <header class="masthead">
+      <h1 class="brand">AeroCortex</h1>
+      <div class="brand-rule" aria-hidden="true">
+        <div class="line"></div>
+        <div class="mark"></div>
+      </div>
+      <div class="status-line" id="status-line" aria-live="polite">
+        <span>System <strong id="sys-status">…</strong></span>
+        <span>Mongo <strong id="dep-mongo">…</strong></span>
+        <span>Neo4j <strong id="dep-neo4j">…</strong></span>
+        <span>Pinecone <strong id="dep-pinecone">…</strong></span>
+        <span>Groq <strong id="dep-groq">…</strong></span>
+        <span>Vector <strong id="dep-vector">…</strong></span>
+        <span>Engine <strong id="dep-engine">…</strong></span>
+      </div>
+    </header>
+
+    <section class="control-rail" aria-label="Mission controls">
+      <div class="field">
+        <label for="scenario">Failure scenario</label>
+        <select id="scenario"></select>
+      </div>
+      <div class="field-row">
+        <div class="field">
+                  <label for="api-url">API base URL</label>
+          <input id="api-url" type="text" autocomplete="off" spellcheck="false" placeholder="/api" value="/api" readonly title="Always uses same-origin /api proxy" />
+        </div>
+        <div class="field">
+          <label for="api-key">API key</label>
+          <input id="api-key" type="password" autocomplete="off" spellcheck="false" />
+        </div>
+      </div>
+      <div class="actions">
+        <button type="button" class="btn btn-primary" id="btn-step">Step Mission →</button>
+        <button type="button" class="btn btn-outline" id="btn-reset">Reset</button>
+      </div>
+    </section>
+    <p class="conn-error" id="conn-error" role="alert"></p>
+
+    <main id="main">
+      <section class="kpi-strip" aria-label="Live telemetry">
+        <div class="kpi">
+          <div class="kpi-label">Mission</div>
+          <div class="kpi-value" id="kpi-mission">—</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">State</div>
+          <div class="kpi-value" id="kpi-state">—</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Altitude</div>
+          <div class="kpi-value" id="kpi-alt">—</div>
+          <div class="kpi-sub">metres AGL</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Velocity</div>
+          <div class="kpi-value" id="kpi-vel">—</div>
+          <div class="kpi-sub">m / s</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Battery</div>
+          <div class="kpi-value" id="kpi-bat">—</div>
+          <div class="kpi-sub" id="kpi-bat-sub">—</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">Wind</div>
+          <div class="kpi-value" id="kpi-wind">—</div>
+          <div class="kpi-sub">m / s</div>
+        </div>
+      </section>
+
+      <hr class="section-rule" />
+
+      <div class="grid-2">
+        <div class="col-left">
+          <article class="panel">
+            <div class="panel-kicker">Section 02</div>
+            <h2 class="panel-title">Situation</h2>
+            <div class="panel-body" id="panel-situation">
+              <h4>Nominal</h4>
+              <p class="muted-note">Awaiting mission step. Deterministic detectors idle.</p>
+            </div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-kicker">Section 05</div>
+            <h2 class="panel-title">Planner</h2>
+            <div class="panel-body" id="panel-planner">
+              <p class="muted-note">Execute a mission step to surface a recovery plan.</p>
+            </div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-kicker">Section 06</div>
+            <h2 class="panel-title">Safety</h2>
+            <div class="panel-body" id="panel-safety">
+              <p class="muted-note">Safety gatekeeper awaits planner output.</p>
+            </div>
+          </article>
+        </div>
+
+        <div class="col-right">
+          <article class="panel">
+            <div class="panel-kicker">Section 03</div>
+            <h2 class="panel-title">Hybrid Memory</h2>
+            <div id="panel-memory">
+              <p class="muted-note">No retrieved episodes yet.</p>
+            </div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-kicker">Section 04</div>
+            <h2 class="panel-title">Knowledge Graph</h2>
+            <div id="panel-kg">
+              <p class="muted-note">Graph paths nominal.</p>
+            </div>
+          </article>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <section class="stats-band" aria-label="Continual learning">
+    <div class="stats-inner">
+      <div>
+        <div class="stat-label">Episodes</div>
+        <div class="stat-value" id="stat-episodes">0</div>
+      </div>
+      <div>
+        <div class="stat-label">Rules</div>
+        <div class="stat-value" id="stat-rules">0</div>
+      </div>
+      <div>
+        <div class="stat-label">KG Nodes</div>
+        <div class="stat-value" id="stat-nodes">0</div>
+      </div>
+      <div>
+        <div class="stat-label">KG Edges</div>
+        <div class="stat-value" id="stat-edges">0</div>
+        <div class="stat-sub" id="stat-vector">Vector —</div>
+      </div>
+    </div>
+  </section>
+
+  <div class="shell">
+    <section class="charts" aria-label="Telemetry streaming">
+      <h2 class="charts-title">Telemetry Stream</h2>
+      <p class="chart-empty" id="chart-empty">No history yet. Step the mission to stream black-line plots.</p>
+      <div class="chart-grid" id="chart-grid" hidden>
+        <div class="chart-card">
+          <h4>Battery %</h4>
+          <canvas id="chart-battery" width="400" height="160"></canvas>
+        </div>
+        <div class="chart-card">
+          <h4>Altitude &amp; Velocity</h4>
+          <canvas id="chart-altvel" width="400" height="160"></canvas>
+        </div>
+        <div class="chart-card">
+          <h4>Wind &amp; GPS HDOP</h4>
+          <canvas id="chart-windgps" width="400" height="160"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <details class="logs" open>
+      <summary>Orchestration logs</summary>
+      <div class="log-body" id="log-body">AeroCortex cognitive system initialized. Ready for mission step.</div>
+    </details>
+
+  </div>
+
+  <script>
+    /* Inline wire check — runs even if external JS is cached/stale */
+    (function () {
+      var el = document.getElementById("conn-error");
+      if (el) {
+        el.textContent = "Loading scripts…";
+        el.classList.add("visible");
+      }
+      fetch("/api/healthz", { cache: "no-store" })
+        .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+        .then(function (x) {
+          var d = (x.j && x.j.dependencies) || {};
+          function set(id, v) {
+            var n = document.getElementById(id);
+            if (n) n.textContent = v || "—";
+          }
+          set("sys-status", (x.j && x.j.status) || "—");
+          set("dep-mongo", d.mongo);
+          set("dep-neo4j", d.neo4j);
+          set("dep-pinecone", d.pinecone);
+          set("dep-groq", d.groq);
+          set("dep-vector", (x.j && x.j.vector_engine) || d.chroma);
+          set("dep-engine", x.j && x.j.engine);
+          if (el) {
+            el.textContent = x.ok
+              ? "Wire OK · /api/healthz · " + ((x.j && x.j.status) || "?")
+              : "Wire degraded · /api/healthz";
+            el.classList.add("visible");
+          }
+        })
+        .catch(function (err) {
+          if (el) {
+            el.textContent = "Wire FAILED · " + (err && err.message ? err.message : err);
+            el.classList.add("visible");
+          }
+        });
+    })();
+  </script>
+  <script src="/static/js/api.js?v=8"></script>
+  <script src="/static/js/charts.js?v=8"></script>
+  <script src="/static/js/app.js?v=8"></script>
+</body>
+</html>
