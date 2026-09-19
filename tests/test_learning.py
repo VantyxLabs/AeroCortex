@@ -54,3 +54,41 @@ def test_learning_stores_and_reinforces(learning_agent):
         top_k=3
     )
     assert any("SWITCH_TO_VIO" in e["experience"].action for e in episodes)
+
+
+class _DownDocumentStore:
+    available = False
+
+    def insert_episode_sync(self, episode):
+        return None
+
+
+def test_learning_degrades_when_mongo_down():
+    agent = LearningAgent(document_store=_DownDocumentStore())
+    t = UAVTelemetry(mission_id="TEST_LEARN_MONGO_DOWN", altitude=110.0, wind_speed=8.0)
+    sit = SituationReport(
+        anomaly_detected=True,
+        failure_type="GPS_INTERFERENCE",
+        severity="HIGH",
+        description="GPS degraded"
+    )
+    plan = RecoveryPlan(action="SWITCH_TO_VIO_DEAD_RECKONING", confidence=0.92)
+    verdict = SafetyVerdict(approved=True)
+
+    res = agent.process_mission_outcome(
+        telemetry=t,
+        situation=sit,
+        plan=plan,
+        verdict=verdict,
+        success=True,
+        duration_s=25.0,
+    )
+
+    assert res["status"] == "SUCCESS"
+    assert res["persisted"] is False
+    assert res["episode_id"]
+    episodes = agent.episodic_memory.retrieve_similar_experiences(
+        "GPS interference degraded",
+        top_k=3,
+    )
+    assert any("SWITCH_TO_VIO" in e["experience"].action for e in episodes)

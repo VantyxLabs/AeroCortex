@@ -22,11 +22,13 @@ class LearningAgent:
         self,
         episodic_memory: Optional[EpisodicMemory] = None,
         semantic_memory: Optional[SemanticMemory] = None,
-        knowledge_graph: Optional[KnowledgeGraph] = None
+        knowledge_graph: Optional[KnowledgeGraph] = None,
+        document_store=None,
     ):
         self.episodic_memory = episodic_memory or EpisodicMemory()
         self.semantic_memory = semantic_memory or SemanticMemory()
         self.knowledge_graph = knowledge_graph or KnowledgeGraph()
+        self.document_store = document_store
 
     def process_mission_outcome(
         self,
@@ -98,7 +100,7 @@ class LearningAgent:
         persisted = False
         episode_id = None
         try:
-            store = get_document_store()
+            store = self.document_store if self.document_store is not None else get_document_store()
             episode_id = store.insert_episode_sync(episode_doc)
             persisted = episode_id is not None
         except Exception:

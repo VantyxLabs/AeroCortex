@@ -46,6 +46,7 @@ def test_workflow_failure_recovery_closed_loop(graph):
     assert state["learning_result"] is not None
     assert state["learning_result"].get("status") == "SUCCESS"
     assert state["learning_result"].get("outcome") == "MISSION_SUCCESS"
+    assert "persisted" in state["learning_result"]
 
 def test_workflow_unsafe_plan_triggers_fallback(graph):
     # Craft telemetry with critical battery (< 10%)

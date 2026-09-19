@@ -44,6 +44,21 @@ def test_semantic_memory_matching():
     assert "SWITCH_TO_VIO" in rules[0].action
 
 
+def test_semantic_memory_falls_back_to_json(tmp_path, monkeypatch):
+    class DownStore:
+        available = False
+
+        def get_rules_sync(self):
+            raise RuntimeError("mongo down")
+
+    monkeypatch.setattr("memory.semantic_memory.get_document_store", lambda: DownStore())
+    path = tmp_path / "semantic_rules.json"
+    sm = SemanticMemory(file_path=str(path))
+    rules = sm.match_rules("GPS_INTERFERENCE")
+    assert len(rules) >= 1
+    assert path.exists()
+
+
 def test_knowledge_graph_traversal():
     kg = KnowledgeGraph()
     paths = kg.query_action_relevance("GPS_INTERFERENCE")
@@ -96,6 +111,35 @@ def test_networkx_reinforcement_increases_weight(tmp_path):
     after = backend.get_edge_stats("MODERATE_WIND", "SWITCH_TO_VIO_DEAD_RECKONING")
     assert after["hits"] == (before["hits"] or 0) + 1
     assert after["weight"] > (before["weight"] or 0.5)
+
+
+def test_neo4j_reinforcement_increases_weight():
+    try:
+        neo = Neo4jBackend()
+    except Exception:
+        pytest.skip("Neo4j is not reachable")
+    try:
+        neo.seed_ontology()
+        before = neo.get_edge_stats("MODERATE_WIND", "SWITCH_TO_VIO_DEAD_RECKONING")
+        neo.add_mission_resolution(
+            "M_REINFORCE", "GPS_INTERFERENCE", "MODERATE_WIND",
+            "SWITCH_TO_VIO_DEAD_RECKONING", "MISSION_SUCCESS", True, "ep-neo-1"
+        )
+        after = neo.get_edge_stats("MODERATE_WIND", "SWITCH_TO_VIO_DEAD_RECKONING")
+        assert after["hits"] == (before["hits"] or 0) + 1
+        assert after["weight"] > (before["weight"] or 0.5)
+        assert after.get("last_episode_id") == "ep-neo-1"
+    finally:
+        neo.close()
+
+
+def test_knowledge_graph_facade_reports_engine():
+    kg = KnowledgeGraph()
+    assert kg.engine in ("neo4j", "networkx")
+    summary = kg.get_summary()
+    assert summary["engine"] in ("Neo4j", "NetworkX Embedded")
+    assert summary["engine_id"] == kg.engine
+    kg.close()
 
 
 def test_hybrid_fusion_ranking_normalized():
