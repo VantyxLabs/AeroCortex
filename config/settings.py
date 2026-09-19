@@ -136,7 +136,8 @@ class AppConfig(BaseModel):
 def _overlay_env(cfg: AppConfig) -> AppConfig:
     """Environment variables win over config.yaml defaults."""
     cfg.api_host = _env("API_HOST", cfg.api_host)
-    cfg.api_port = _env_int("API_PORT", cfg.api_port)
+    # Render/Railway inject PORT; prefer API_PORT when set, else PORT.
+    cfg.api_port = _env_int("API_PORT", _env_int("PORT", cfg.api_port))
     cfg.api_key = _env("API_KEY", cfg.api_key)
 
     cfg.mongo.uri = _env("MONGO_URI", cfg.mongo.uri)

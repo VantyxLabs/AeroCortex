@@ -35,8 +35,9 @@ class MissionSimulator:
             "planner_plan": result.get("planner_plan").model_dump() if result.get("planner_plan") else None,
             "safety_verdict": result.get("safety_verdict").model_dump() if result.get("safety_verdict") else None,
             "final_plan": result.get("final_plan").model_dump() if result.get("final_plan") else None,
+            "memory_context": result.get("memory_context").model_dump() if result.get("memory_context") else None,
             "execution_status": result.get("execution_status", "UNKNOWN"),
-            "logs": result.get("logs", [])
+            "logs": result.get("logs", []),
         }
         self.history.append(step_record)
         return step_record

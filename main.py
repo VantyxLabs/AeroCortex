@@ -1,6 +1,5 @@
 import argparse
 import sys
-import subprocess
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -23,16 +22,21 @@ def run_api():
     uvicorn.run("api.telemetry_api:app", host=config.api_host, port=config.api_port, reload=False)
 
 def run_dashboard():
-    app_path = PROJECT_ROOT / "dashboard" / "app.py"
-    print(f"[AeroCortex Dashboard] Launching Streamlit on port {config.dashboard_port}...")
-    subprocess.run([sys.executable, "-m", "streamlit", "run", str(app_path), "--server.port", str(config.dashboard_port)])
+    import uvicorn
+    print(f"[AeroCortex Dashboard] Launching monochrome SPA on {config.api_host}:{config.dashboard_port}...")
+    uvicorn.run(
+        "dashboard.server:app",
+        host=config.api_host,
+        port=config.dashboard_port,
+        reload=False,
+    )
 
 def main():
     parser = argparse.ArgumentParser(description="AeroCortex Cognitive Edge UAV Architecture")
     parser.add_argument("--demo", action="store_true", help="Run the one-command terminal demo")
     parser.add_argument("--evaluate", action="store_true", help="Run evaluation benchmarks against baseline")
     parser.add_argument("--api", action="store_true", help="Run FastAPI telemetry gateway")
-    parser.add_argument("--dashboard", action="store_true", help="Run Streamlit interactive dashboard")
+    parser.add_argument("--dashboard", action="store_true", help="Run Minimalist Monochrome live dashboard")
 
     args = parser.parse_args()
 
