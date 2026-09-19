@@ -2,18 +2,18 @@
 
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
 [![LangGraph](https://img.shields.io/badge/Orchestration-LangGraph-orange.svg)](https://github.com/langchain-ai/langgraph)
-[![ChromaDB](https://img.shields.io/badge/Vector%20Store-ChromaDB-purple.svg)](https://www.trychroma.com/)
+[![Pinecone](https://img.shields.io/badge/Vector%20Store-Pinecone%20%2F%20Chroma-purple.svg)](https://www.pinecone.io/)
 [![Neo4j](https://img.shields.io/badge/Graph-Neo4j%20%2F%20NetworkX-green.svg)](https://neo4j.com/)
-[![Local LLM](https://img.shields.io/badge/LLM-Gemma%203%20via%20Ollama-red.svg)](https://ollama.ai/)
+[![LLM](https://img.shields.io/badge/LLM-Groq%20%2F%20Ollama-red.svg)](https://groq.com/)
 [![Edge Target](https://img.shields.io/badge/Edge%20Target-Raspberry%20Pi%205-red.svg)](https://www.raspberrypi.com/products/raspberry-pi-5/)
-[![Offline First](https://img.shields.io/badge/Connectivity-100%25%20Offline%20First-brightgreen.svg)]()
+[![Offline Fallback](https://img.shields.io/badge/Edge-Ollama%20%2B%20Chroma%20fallback-brightgreen.svg)]()
 
-AeroCortex is a complete, production-grade cognitive memory and recovery architecture designed for autonomous Unmanned Aerial Vehicles (UAVs) operating in edge environments without cloud connectivity. 
+AeroCortex is a complete, production-grade cognitive memory and recovery architecture designed for autonomous Unmanned Aerial Vehicles (UAVs). The REST API is meant to run with internet access (Groq + Pinecone + Atlas + Aura). Ollama and Chroma are automatic fallbacks for Raspberry Pi / offline edge.
 
 When encountering in-flight anomalies (GPS interference, rapid battery sag, communication dropout, severe wind gusts, sensor divergence, or compound failures), AeroCortex:
 1. **Detects anomalies deterministically** (< 1ms threshold engine; no LLM hallucinations for basic detection).
-2. **Retrieves relevant past mission experiences** via **Hybrid Memory Retrieval** (ChromaDB semantic vectors + Neo4j / NetworkX relational Knowledge Graph + Semantic IF-THEN rules).
-3. **Reasons over recovery options** using a **Local Gemma 3 LLM via Ollama** (with an offline cognitive reasoner fallback).
+2. **Retrieves relevant past mission experiences** via **Hybrid Memory Retrieval** (Pinecone semantic vectors with Chroma fallback + Neo4j / NetworkX relational Knowledge Graph + Semantic IF-THEN rules).
+3. **Reasons over recovery options** using **Groq** (with Ollama on Raspberry Pi when Groq is unreachable, then an offline cognitive reasoner).
 4. **Validates all recovery plans through a mandatory deterministic Safety Agent** enforcing hard aerodynamic, electrical, and spatial constraints.
 5. **Executes safe recovery or deterministic fail-safe fallbacks**.
 6. **Learns continually across missions** by indexing outcomes, reinforcing operational rules, and updating the Knowledge Graph for superior future recall.
@@ -37,7 +37,7 @@ flowchart TD
         
         subgraph Memory_Layer ["3-Layer Persistent Cognitive Memory"]
             WM[("Working Memory\nVolatile Sliding Buffer")]
-            EM[("Episodic Memory\nChromaDB Vector Store")]
+            EM[("Episodic Memory\nPinecone / Chroma fallback")]
             SM[("Semantic Memory\nIF-THEN Rules")]
             KG[("Knowledge Graph\nNeo4j / NetworkX")]
         end
@@ -47,7 +47,7 @@ flowchart TD
         MemoryAgent <--> SM
         MemoryAgent <--> KG
         
-        MemoryAgent -->|Ranked Context\n0.6*Vec + 0.4*KG| PlannerAgent["3. Planner Agent\nLocal Gemma 3 via Ollama"]
+        MemoryAgent -->|Ranked Context\n0.6*Vec + 0.4*KG| PlannerAgent["3. Planner Agent\nGroq / Ollama fallback"]
         
         PlannerAgent -->|Structured JSON Plan| SafetyAgent["4. Safety Agent\nDeterministic Hard Constraints"]
         
@@ -82,20 +82,21 @@ aerocortex/
 ├── agents/
 │   ├── situation_agent.py        # Deterministic telemetry anomaly detector & classifier
 │   ├── memory_agent.py           # Hybrid retriever (0.6*vector + 0.4*graph)
-│   ├── planner_agent.py          # Local Gemma 3 recovery planner via Ollama client
+│   ├── planner_agent.py          # Groq recovery planner with Ollama + reasoner fallback
 │   ├── safety_agent.py           # Deterministic safety constraint validator & gatekeeper
-│   └── learning_agent.py         # Experience consolidation, ChromaDB & KG rule update
+│   └── learning_agent.py         # Experience consolidation, Pinecone/Chroma & KG rule update
 ├── memory/
 │   ├── working_memory.py         # Fast in-memory state store for active mission
-│   ├── episodic_memory.py        # ChromaDB experience vector store & semantic similarity
+│   ├── episodic_memory.py        # Experience vector store & semantic similarity
 │   ├── semantic_memory.py        # Structured IF-THEN operational knowledge base
-│   ├── vector_store.py           # ChromaDB client wrapper & offline embedding functions
+│   ├── vector_store.py           # Pinecone primary + Chroma fallback + offline embeddings
 │   └── knowledge_graph.py        # Neo4j client + offline NetworkX embedded fallback graph
 ├── simulation/
 │   ├── telemetry_generator.py    # 6-DOF dynamic UAV telemetry generator
 │   ├── failure_scenarios.py      # 8 realistic simulated failure modes
 │   └── mission_simulator.py      # Full mission simulation runner & coordinator
 ├── llm/
+│   ├── groq_client.py            # Groq chat client (REST primary)
 │   └── ollama_client.py          # Ollama Gemma 3 client + offline cognitive reasoner fallback
 ├── orchestration/
 │   ├── state.py                  # LangGraph AeroCortexState TypedDict
@@ -195,7 +196,7 @@ Copy `.env.example` to `.env`, then:
 docker compose up --build
 ```
 
-Brings up **five** services in order (`mongo`, `neo4j`, `ollama` healthy first, then `api`, then `dashboard`):
+Brings up **five** services in order (`mongo` and `neo4j` healthy first; `ollama` starts in parallel as a fallback, then `api`, then `dashboard`):
 
 | Service | URL |
 |---|---|
@@ -205,17 +206,17 @@ Brings up **five** services in order (`mongo`, `neo4j`, `ollama` healthy first, 
 | Neo4j Browser | http://localhost:7474 |
 | Ollama | http://localhost:11434 |
 
-The API does not start until Neo4j Bolt and Mongo accept connections, so it should report `engine: Neo4j` instead of silently falling back to NetworkX. Chroma is persisted on the `chroma_data` volume.
+The API does not start until Neo4j Bolt and Mongo accept connections, so it should report `engine: Neo4j` instead of silently falling back to NetworkX. Pinecone is the REST vector store; Chroma on `chroma_data` is used only if Pinecone is unset or unreachable.
 
 `GET /healthz` is unauthenticated. Everything else (except `/docs`) requires `X-API-Key`.
 
 ### Cloud hosting
 
-**Recommended:** Railway or Render (Docker) + [MongoDB Atlas](https://www.mongodb.com/atlas) free tier + [Neo4j AuraDB](https://neo4j.com/cloud/aura-free/) free tier.
+**Recommended:** Railway or Render (Docker) + [MongoDB Atlas](https://www.mongodb.com/atlas) + [Neo4j AuraDB](https://neo4j.com/cloud/aura-free/) + [Pinecone](https://www.pinecone.io/) + [Groq](https://console.groq.com/).
 
-**Ollama will not fit on a free cloud tier.** Point `OLLAMA_BASE_URL` at a machine that actually runs Ollama (ngrok / Cloudflare Tunnel), or leave it unset and run deployed instances in `planner_source: offline_reasoner` mode. Demo the Gemma path locally with `ollama pull gemma3:latest`. Do not assume the cloud API can call `localhost:11434`.
+The REST API is designed to run **with internet**. Set `GROQ_API_KEY` and `PINECONE_API_KEY` in `.env`. Create a Pinecone serverless index named `aerocortex-episodes` (dimension **64**, metric **cosine**). Groq is the planner; Ollama is not required in the cloud.
 
-Set `CHROMA_DIR` to a mounted disk. Without a volume the vector store resets on every redeploy.
+**Ollama + Chroma are Raspberry Pi / offline fallbacks.** If Groq is unreachable the planner uses Ollama, then the deterministic reasoner. If Pinecone is unreachable the vector store uses local Chroma. Do not assume a cloud host can call `localhost:11434`.
 
 ---
 
@@ -250,7 +251,7 @@ python main.py --api
 ```
 Interactive Swagger docs are accessible at `http://localhost:8000/docs`.
 
-All agent + memory work happens behind this API. Send telemetry, get a safety-validated recovery plan, and persist experience to Mongo / Chroma / Neo4j.
+All agent + memory work happens behind this API. Send telemetry, get a safety-validated recovery plan, and persist experience to Mongo / Pinecone (or Chroma) / Neo4j.
 
 | Method | Path | Auth | What it does |
 |---|---|---|---|
@@ -285,13 +286,15 @@ with AeroCortexClient("http://localhost:8000", api_key="change-me-local-dev-key"
     print(result["action"], result["planner_source"], result["persisted"])
 ```
 
-Copy `.env.example` to `.env`, then `docker compose up --build` to bring up Mongo, Neo4j, Ollama, the API, and the dashboard in health-check order. Ollama on a free cloud tier is optional — if it is down the API still returns a valid plan via `planner_source: "offline_reasoner"`.
+Copy `.env.example` to `.env`, add Groq and Pinecone keys for the REST API, then `docker compose up --build`. Ollama is optional in compose — if Groq is down the API uses Ollama when present, otherwise `planner_source: "offline_reasoner"`.
 
 ---
 
-## 7. Local LLM & Ollama Setup
+## 7. LLM Setup (Groq primary, Ollama fallback)
 
-AeroCortex uses **Gemma 3** running locally on edge hardware via **Ollama**.
+The REST API uses **Groq** (`llama-3.3-70b-versatile` by default). Set `GROQ_API_KEY` from [console.groq.com](https://console.groq.com/).
+
+**Raspberry Pi / offline:** install Ollama and pull a small Gemma model. AeroCortex uses Ollama only when Groq is unreachable.
 
 ```bash
 # 1. Install Ollama (https://ollama.ai)
@@ -304,8 +307,7 @@ ollama pull gemma:2b
 ollama serve
 ```
 
-> [!NOTE]
-> **Offline Resilience**: If Ollama is not running or takes > 500ms to respond, AeroCortex automatically switches to an **Offline Cognitive Reasoner** that synthesizes the retrieved hybrid memories and rules deterministically, guaranteeing that UAV flight controls never stall.
+> **Offline Resilience**: If Groq and Ollama are both unreachable, AeroCortex switches to an **Offline Cognitive Reasoner** that synthesizes retrieved hybrid memories and rules deterministically, so UAV flight controls never stall.
 
 ---
 
@@ -313,7 +315,7 @@ ollama serve
 
 To balance vector semantic similarity with relational graph structure, the Memory Agent computes a composite relevance score:
 
-$$\text{Final Score} = w_{\text{vector}} \cdot \text{Similarity}_{\text{ChromaDB}} + w_{\text{graph}} \cdot \text{Relevance}_{\text{Neo4j}}$$
+$$\text{Final Score} = w_{\text{vector}} \cdot \text{Similarity}_{\text{Pinecone / Chroma}} + w_{\text{graph}} \cdot \text{Relevance}_{\text{Neo4j}}$$
 
 Default configuration in `config/config.yaml`:
 - $w_{\text{vector}} = 0.6$
@@ -340,9 +342,9 @@ The script streams 40 flight cycles, injects a simulated GPS failure at step 15,
 To deploy AeroCortex on a **Raspberry Pi 5 (4GB / 8GB)**:
 
 1. **Lightweight Embedding Engine**: AeroCortex features a built-in deterministic 64-dimensional offline embedding function (`DeterministicOfflineEmbedding`) that runs in pure Python/NumPy, avoiding heavy PyTorch dependencies.
-2. **Ollama Quantization**: Use `gemma:2b` (4-bit quantized, ~1.6 GB RAM) for sub-second edge inference.
+2. **Ollama Quantization**: Use `gemma:2b` (4-bit quantized, ~1.6 GB RAM) for sub-second edge inference when Groq is unreachable.
 3. **Embedded Graph Mode**: AeroCortex automatically uses its embedded NetworkX / JSON graph engine, requiring zero Neo4j Docker overhead on edge devices.
-4. **Energy Footprint**: Complete idle memory usage is `< 280MB` RAM.
+4. **Local vectors**: Leave `PINECONE_API_KEY` empty on the Pi so episodic memory stays on Chroma.
 
 ---
 

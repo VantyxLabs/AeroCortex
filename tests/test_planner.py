@@ -5,6 +5,7 @@ import httpx
 import pytest
 
 from agents.planner_agent import PlannerAgent
+from llm.groq_client import GroqClient
 from llm.ollama_client import OllamaClient
 from models import (
     UAVTelemetry,
@@ -216,3 +217,80 @@ def test_ollama_request_uses_json_format_and_timeouts(monkeypatch):
     assert isinstance(timeout, httpx.Timeout)
     assert timeout.connect == pytest.approx(0.3)
     assert timeout.read == pytest.approx(5.0)
+
+
+def test_valid_groq_json_used_when_confident(monkeypatch):
+    agent = PlannerAgent()
+    ollama_calls = []
+    monkeypatch.setattr(agent.groq, "generate_json", lambda *a, **k: dict(VALID_LLM_PLAN))
+    monkeypatch.setattr(
+        agent.client, "generate_json", lambda *a, **k: ollama_calls.append(1) or None
+    )
+    t, sit, ctx = _gps_inputs()
+    plan = agent.plan_recovery(t, sit, ctx)
+    assert plan.source == "groq"
+    assert plan.action == "SWITCH_TO_VIO_DEAD_RECKONING"
+    assert ollama_calls == []
+
+
+def test_groq_unreachable_falls_back_to_ollama(monkeypatch):
+    agent = PlannerAgent()
+    monkeypatch.setattr(agent.groq, "generate_json", lambda *a, **k: None)
+    monkeypatch.setattr(agent.client, "generate_json", lambda *a, **k: dict(VALID_LLM_PLAN))
+    t, sit, ctx = _gps_inputs()
+    plan = agent.plan_recovery(t, sit, ctx)
+    assert plan.source == "ollama"
+    assert plan.confidence == pytest.approx(0.91)
+
+
+def test_low_confidence_groq_does_not_call_ollama(monkeypatch):
+    agent = PlannerAgent()
+    low = dict(VALID_LLM_PLAN)
+    low["confidence"] = 0.4
+    ollama_calls = []
+    monkeypatch.setattr(agent.groq, "generate_json", lambda *a, **k: low)
+    monkeypatch.setattr(
+        agent.client, "generate_json", lambda *a, **k: ollama_calls.append(1) or dict(VALID_LLM_PLAN)
+    )
+    t, sit, ctx = _gps_inputs()
+    plan = agent.plan_recovery(t, sit, ctx)
+    assert plan.source == "offline_reasoner"
+    assert ollama_calls == []
+
+
+def test_groq_request_uses_json_object_and_timeouts(monkeypatch):
+    captured = {}
+
+    class FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"choices": [{"message": {"content": json.dumps(VALID_LLM_PLAN)}}]}
+
+    class FakeClient:
+        def __init__(self, timeout=None):
+            captured["timeout"] = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def post(self, url, headers=None, json=None):
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["json"] = json
+            return FakeResp()
+
+    monkeypatch.setattr("llm.groq_client.httpx.Client", FakeClient)
+    client = GroqClient(api_key="test-key", enabled=True)
+    parsed = client.generate_json("hello")
+    assert parsed["action"] == VALID_LLM_PLAN["action"]
+    assert captured["url"].endswith("/chat/completions")
+    assert captured["json"]["response_format"] == {"type": "json_object"}
+    assert captured["headers"]["Authorization"] == "Bearer test-key"
+    timeout = captured["timeout"]
+    assert isinstance(timeout, httpx.Timeout)
+    assert timeout.connect == pytest.approx(2.0)
+    assert timeout.read == pytest.approx(15.0)

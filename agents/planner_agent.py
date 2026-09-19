@@ -3,6 +3,7 @@ import time
 from typing import Any, Dict, Optional
 
 from config import config
+from llm.groq_client import GroqClient
 from llm.ollama_client import SYSTEM_PROMPT, OllamaClient
 from models import (
     UAVTelemetry,
@@ -13,15 +14,24 @@ from models import (
 )
 
 
+_UNREACHABLE = object()
+
+
 class PlannerAgent:
     """
     Planner Agent:
     Builds a grounded prompt from hydrated Mongo episodes, semantic rules, and
-    the situation report; asks Ollama for JSON; validates against RecoveryPlan;
-    retries once on validation failure; otherwise uses the offline reasoner.
+    the situation report; asks Groq for JSON; if Groq is unreachable, asks
+    Ollama; validates against RecoveryPlan; retries once on validation failure;
+    otherwise uses the offline reasoner (Raspberry Pi / no LLM).
     """
 
-    def __init__(self, ollama_client: Optional[OllamaClient] = None):
+    def __init__(
+        self,
+        ollama_client: Optional[OllamaClient] = None,
+        groq_client: Optional[GroqClient] = None,
+    ):
+        self.groq = groq_client if groq_client is not None else GroqClient()
         self.client = ollama_client or OllamaClient()
         self.min_confidence = config.llm.min_confidence_threshold
 
@@ -50,13 +60,26 @@ class PlannerAgent:
                 plan_latency_ms=round((time.time() - start_t) * 1000, 2),
             )
 
-        ollama_plan = self._plan_with_ollama(
-            telemetry, situation, memory_context, mission_objective
+        groq_plan = self._plan_with_client(
+            self.groq, "groq", telemetry, situation, memory_context, mission_objective
         )
-        if ollama_plan and ollama_plan.confidence >= self.min_confidence:
-            ollama_plan.source = "ollama"
-            ollama_plan.plan_latency_ms = round((time.time() - start_t) * 1000, 2)
-            return ollama_plan
+        if groq_plan is not _UNREACHABLE:
+            if groq_plan and groq_plan.confidence >= self.min_confidence:
+                groq_plan.source = "groq"
+                groq_plan.plan_latency_ms = round((time.time() - start_t) * 1000, 2)
+                return groq_plan
+        else:
+            ollama_plan = self._plan_with_ollama(
+                telemetry, situation, memory_context, mission_objective
+            )
+            if (
+                ollama_plan
+                and ollama_plan is not _UNREACHABLE
+                and ollama_plan.confidence >= self.min_confidence
+            ):
+                ollama_plan.source = "ollama"
+                ollama_plan.plan_latency_ms = round((time.time() - start_t) * 1000, 2)
+                return ollama_plan
 
         fallback = self.client.deterministic_reasoner(telemetry, situation, memory_context)
         fallback.source = "offline_reasoner"
@@ -100,7 +123,7 @@ class PlannerAgent:
         repair = ""
         if repair_hint:
             repair = (
-                "\nPREVIOUS RESPONSE WAS INVALID. Fix this: "
+                "PREVIOUS RESPONSE WAS INVALID. Fix this: "
                 f"{repair_hint}\nReturn ONLY valid JSON matching the schema.\n"
             )
         graph_paths = memory_context.graph_paths[:2] if memory_context.graph_paths else []
@@ -133,7 +156,7 @@ Mission Objective: {mission_objective}
 {repair}
 Provide your recovery plan as JSON with keys: action, reason, steps (list of strings), expected_outcome, confidence (float 0.0 to 1.0), risk_level (LOW/MEDIUM/HIGH)."""
 
-    def _validate_llm_plan(self, parsed: Optional[Dict[str, Any]]) -> RecoveryPlan:
+    def _validate_llm_plan(self, parsed: Optional[Dict[str, Any]], source: str) -> RecoveryPlan:
         if not parsed or not isinstance(parsed, dict):
             raise ValueError("empty or non-object LLM response")
         draft = LLMRecoveryPlan.model_validate(parsed)
@@ -144,11 +167,13 @@ Provide your recovery plan as JSON with keys: action, reason, steps (list of str
             expected_outcome=draft.expected_outcome,
             confidence=draft.confidence,
             risk_level=draft.risk_level,
-            source="ollama",
+            source=source,
         )
 
-    def _plan_with_ollama(
+    def _plan_with_client(
         self,
+        client: Any,
+        source: str,
         telemetry: UAVTelemetry,
         situation: SituationReport,
         memory_context: HybridMemoryContext,
@@ -157,11 +182,11 @@ Provide your recovery plan as JSON with keys: action, reason, steps (list of str
         prompt = self.build_user_prompt(
             telemetry, situation, memory_context, mission_objective
         )
-        parsed = self.client.generate_json(prompt, system=SYSTEM_PROMPT)
+        parsed = client.generate_json(prompt, system=SYSTEM_PROMPT)
         if parsed is None:
-            return None
+            return _UNREACHABLE
         try:
-            return self._validate_llm_plan(parsed)
+            return self._validate_llm_plan(parsed, source)
         except Exception as exc:
             repair_prompt = self.build_user_prompt(
                 telemetry,
@@ -170,10 +195,26 @@ Provide your recovery plan as JSON with keys: action, reason, steps (list of str
                 mission_objective,
                 repair_hint=str(exc),
             )
-            parsed_retry = self.client.generate_json(repair_prompt, system=SYSTEM_PROMPT)
+            parsed_retry = client.generate_json(repair_prompt, system=SYSTEM_PROMPT)
             if parsed_retry is None:
-                return None
+                return _UNREACHABLE
             try:
-                return self._validate_llm_plan(parsed_retry)
+                return self._validate_llm_plan(parsed_retry, source)
             except Exception:
                 return None
+
+    def _plan_with_ollama(
+        self,
+        telemetry: UAVTelemetry,
+        situation: SituationReport,
+        memory_context: HybridMemoryContext,
+        mission_objective: str,
+    ) -> Optional[RecoveryPlan]:
+        return self._plan_with_client(
+            self.client,
+            "ollama",
+            telemetry,
+            situation,
+            memory_context,
+            mission_objective,
+        )

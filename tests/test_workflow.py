@@ -33,7 +33,7 @@ def test_workflow_failure_recovery_closed_loop(graph):
     # 3. Planner reasoning
     assert state["planner_plan"] is not None
     assert state["planner_plan"].action is not None
-    assert state["planner_plan"].source in ("ollama", "offline_reasoner")
+    assert state["planner_plan"].source in ("groq", "ollama", "offline_reasoner")
     assert state["planner_plan"].plan_latency_ms >= 0.0
     
     # 4. Safety validation
@@ -64,4 +64,5 @@ def test_workflow_unsafe_plan_triggers_fallback(graph):
         "Deterministic-Safety-Fallback",
         "offline_reasoner",
         "ollama",
+        "groq",
     )

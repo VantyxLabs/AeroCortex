@@ -44,6 +44,7 @@ def _run_gps_fault(graph: AeroCortexGraph, mission_id: str) -> Dict[str, Any]:
         "latency_ms": learning.get("latency_ms") or {},
         "edge": _edge_for_action(graph, action),
         "chroma_count": graph.memory_agent.episodic_memory.vector_store.count(),
+        "vector_engine": getattr(graph.memory_agent.episodic_memory.vector_store, "engine", "chroma"),
         "top": memory.retrieved_experiences[0] if memory and memory.retrieved_experiences else None,
     }
 
@@ -51,7 +52,7 @@ def _run_gps_fault(graph: AeroCortexGraph, mission_id: str) -> Dict[str, Any]:
 def run_gps_reuse_demo(graph: Optional[AeroCortexGraph] = None) -> Dict[str, Any]:
     """
     Money-shot sequence:
-    1. Cold-start GPS failure writes Mongo + Chroma + Neo4j.
+    1. Cold-start GPS failure writes Mongo + Pinecone (Chroma fallback) + Neo4j.
     2. Repeat the same failure and show hydrated recall, score split, and a stronger edge.
     """
     graph = graph or AeroCortexGraph()
@@ -66,8 +67,8 @@ def main():
         "  Real-Time Multi-Agent Recovery & Continual Experiential Learning Demo"
     )
 
-    print("\n[INIT] LangGraph pipeline + Mongo / Chroma / Neo4j (NetworkX fallback) online.")
-    print("[INIT] Target: autonomous edge UAV. Zero cloud required.")
+    print("\n[INIT] LangGraph pipeline + Mongo / Pinecone (Chroma fallback) / Neo4j (NetworkX fallback) online.")
+    print("[INIT] REST API uses Groq + Pinecone. Ollama + Chroma are Raspberry Pi fallbacks.")
 
     print_banner("MISSION 1: Cold start (GPS multipath interference)")
     m1_gen = TelemetryGenerator(mission_id="MISSION_001")
@@ -104,7 +105,7 @@ def main():
     print(f"  [EXEC]      {m1['action']}")
     print("  [LEARNING]  three-store write:")
     print(f"              Mongo persisted={m1['persisted']} episode_id={m1['episode_id']}")
-    print(f"              Chroma count={m1['chroma_count']}")
+    print(f"              Vector ({m1.get('vector_engine', 'chroma')}) count={m1['chroma_count']}")
     print(
         f"              Neo4j {GPS_CONDITION}-[{m1['action']}] "
         f"hits={m1['edge'].get('hits')} weight={m1['edge'].get('weight')}"

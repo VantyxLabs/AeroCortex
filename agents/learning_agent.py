@@ -15,7 +15,7 @@ from memory.document_store import get_document_store
 class LearningAgent:
     """
     Learning Agent:
-    Write path: Mongo (source of truth) → Chroma (embedding) → Neo4j (reinforcement).
+    Write path: Mongo (source of truth) → Pinecone (Chroma fallback) → Neo4j.
     If Mongo is down the pipeline still returns a decision with persisted=false.
     """
     def __init__(

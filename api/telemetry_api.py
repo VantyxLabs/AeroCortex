@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from config import config
+from llm.groq_client import GroqClient
 from llm.ollama_client import OllamaClient
 from memory.document_store import DocumentStore, get_document_store
 from models import UAVTelemetry
@@ -39,15 +40,20 @@ async def lifespan(app: FastAPI):
         logger.warning("Neo4j reconnect failed: %s", exc)
 
     try:
-        graph.memory_agent.episodic_memory.vector_store.count()
+        engine = graph.memory_agent.episodic_memory.vector_store.reconnect()
+        logger.info("Vector store engine after startup: %s", engine)
     except Exception as exc:
-        logger.warning("Chroma warmup failed: %s", exc)
+        logger.warning("Vector store warmup failed: %s", exc)
 
-    ollama = OllamaClient()
-    if ollama.ping():
-        logger.info("Planner path: ollama (%s)", config.llm.model)
+    groq = GroqClient()
+    if groq.ping():
+        logger.info("Planner path: groq (%s)", groq.model)
     else:
-        logger.info("Planner path: offline_reasoner")
+        ollama = OllamaClient()
+        if ollama.ping():
+            logger.info("Planner path: ollama (%s)", config.llm.model)
+        else:
+            logger.info("Planner path: offline_reasoner")
 
     yield
 
@@ -156,19 +162,41 @@ def root():
 @app.get("/healthz")
 async def healthz():
     mongo_ok = await document_store.ping()
-    chroma_ok = graph.memory_agent.episodic_memory.vector_store.ping()
+    vs = graph.memory_agent.episodic_memory.vector_store
+    vector_health = vs.health()
     kg = graph.memory_agent.knowledge_graph
+    kg.reconnect()
     neo_ok = kg.engine == "neo4j" and kg.ping()
+    groq = GroqClient()
+    groq_ok = groq.ping()
     ollama_ok = OllamaClient().ping()
+
+    if groq_ok:
+        groq_status = "ok"
+    elif groq.is_configured:
+        groq_status = "fallback_ollama" if ollama_ok else "fallback_reasoner"
+    else:
+        groq_status = "unset"
+
+    ollama_status = "ok" if ollama_ok else "fallback_reasoner"
+    pine_configured = vector_health["pinecone"] != "unset"
+    vector_ok = bool(vector_health.get("ok"))
 
     dependencies = {
         "mongo": "ok" if mongo_ok else "down",
         "neo4j": "ok" if neo_ok else "fallback_networkx",
-        "chroma": "ok" if chroma_ok else "down",
-        "ollama": "ok" if ollama_ok else "fallback_reasoner",
+        "pinecone": vector_health["pinecone"],
+        "chroma": vector_health["chroma"],
+        "groq": groq_status,
+        "ollama": ollama_status,
     }
-    degraded = (not mongo_ok) or (not neo_ok) or (not chroma_ok) or (not ollama_ok)
-    if not chroma_ok and not mongo_ok:
+    vector_degraded = (
+        vector_health["pinecone"] in ("fallback_chroma", "down")
+        or (not pine_configured and vector_health["chroma"] != "ok")
+    )
+    llm_degraded = (groq.is_configured and not groq_ok) or (not groq.is_configured and not ollama_ok)
+    degraded = (not mongo_ok) or (not neo_ok) or vector_degraded or llm_degraded
+    if not vector_ok and not mongo_ok:
         return JSONResponse(
             status_code=503,
             content={
@@ -182,6 +210,7 @@ async def healthz():
         "dependencies": dependencies,
         "version": config.system.version,
         "engine": kg.get_summary().get("engine"),
+        "vector_engine": vector_health.get("engine"),
     }
 
 
@@ -216,6 +245,7 @@ def get_memory_state():
     rules = [r.model_dump() for r in graph.memory_agent.semantic_memory.get_all_rules()]
     kg_summary = graph.memory_agent.knowledge_graph.get_summary()
     chroma_count = graph.memory_agent.episodic_memory.vector_store.count()
+    vector_engine = getattr(graph.memory_agent.episodic_memory.vector_store, "engine", "chroma")
     last = graph.memory_agent.last_context
     candidates = []
     if last:
@@ -231,6 +261,7 @@ def get_memory_state():
 
     return {
         "episodic_experiences_count": chroma_count,
+        "vector_engine": vector_engine,
         "semantic_rules_count": len(rules),
         "semantic_rules": rules,
         "knowledge_graph": kg_summary,

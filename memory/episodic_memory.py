@@ -7,7 +7,7 @@ from memory.vector_store import VectorStore
 class EpisodicMemory:
     """
     Episodic Memory Layer:
-    Indexes full mission experiences into ChromaDB vector store.
+    Indexes full mission experiences into the vector store (Pinecone, Chroma fallback).
     Generates embeddings and performs semantic similarity retrieval to find past
     missions facing similar anomalies and environmental contexts.
     """

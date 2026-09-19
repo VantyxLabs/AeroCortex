@@ -27,6 +27,39 @@ def test_working_memory():
     assert wm.get_snapshot()["latest_telemetry"] is None
 
 
+def test_vector_store_falls_back_to_chroma_when_pinecone_down():
+    class DownPinecone:
+        def ping(self):
+            return False
+
+        def add_documents(self, *a, **k):
+            raise RuntimeError("pinecone down")
+
+        def query(self, *a, **k):
+            raise RuntimeError("pinecone down")
+
+        def count(self):
+            raise RuntimeError("pinecone down")
+
+        def reset(self):
+            pass
+
+    vs = VectorStore(collection_name="test_pinecone_fallback", pinecone_backend=DownPinecone())
+    assert vs.reconnect() == "chroma"
+    vs.reset()
+    vs.add_documents(
+        ids=["doc_1", "doc_2"],
+        documents=["GPS failure during cruise in high wind", "Battery depleted emergency land"],
+        metadatas=[{"tag": "gps"}, {"tag": "battery"}],
+    )
+    assert vs.count() == 2
+    health = vs.health()
+    assert health["engine"] == "chroma"
+    assert health["chroma"] == "ok"
+    assert health["pinecone"] == "fallback_chroma"
+    assert health["ok"] is True
+
+
 def test_vector_store_offline():
     vs = VectorStore(collection_name="test_vector_store")
     vs.reset()

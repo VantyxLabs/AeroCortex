@@ -219,13 +219,15 @@ with right_col:
     # Section 7: Continual Learning
     st.subheader("📈 Section 7: Continual Learning Agent")
     kg_sum = graph.memory_agent.knowledge_graph.get_summary()
-    chroma_cnt = graph.memory_agent.episodic_memory.vector_store.count()
+    vs = graph.memory_agent.episodic_memory.vector_store
+    chroma_cnt = vs.count()
     rules_cnt = len(graph.memory_agent.semantic_memory.get_all_rules())
     
     c_l1, c_l2, c_l3 = st.columns(3)
     c_l1.metric("Episodic Experiences", chroma_cnt)
     c_l2.metric("Semantic Rules", rules_cnt)
     c_l3.metric("KG Nodes / Edges", f"{kg_sum['nodes_count']} / {kg_sum['edges_count']}")
+    st.caption(f"Vector engine: {getattr(vs, 'engine', 'chroma')}")
 
 # Section 8: Live Telemetry Charts
 st.divider()

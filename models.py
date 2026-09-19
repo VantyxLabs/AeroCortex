@@ -121,7 +121,7 @@ class RecoveryPlan(BaseModel):
 
 
 class LLMRecoveryPlan(BaseModel):
-    """Strict schema for Ollama JSON — missing fields fail validation."""
+    """Strict schema for Groq / Ollama JSON — missing fields fail validation."""
     action: str = Field(min_length=1)
     reason: str = Field(min_length=1)
     steps: List[str] = Field(min_length=1)

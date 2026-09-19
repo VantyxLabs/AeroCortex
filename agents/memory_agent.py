@@ -76,7 +76,7 @@ class MemoryAgent:
     """
     Memory Agent:
     Coordinates Hybrid Memory Retrieval across:
-    1. ChromaDB Vector Store (Episodic Experience)
+    1. Pinecone Vector Store with Chroma fallback (Episodic Experience)
     2. Neo4j / Embedded Knowledge Graph (Relational Paths)
     3. Semantic Memory (Operational IF-THEN Rules)
     4. MongoDB hydration of winning episode payloads

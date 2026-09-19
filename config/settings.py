@@ -76,6 +76,13 @@ class MemoryConfig(BaseModel):
     semantic_rules_path: str = "data/knowledge/semantic_rules.json"
     knowledge_graph_path: str = "data/knowledge/knowledge_graph.json"
     reinforcement_rate: float = 0.2
+    pinecone_enabled: bool = True
+    pinecone_api_key: str = ""
+    pinecone_index: str = "aerocortex-episodes"
+    pinecone_host: str = ""
+    pinecone_cloud: str = "aws"
+    pinecone_region: str = "us-east-1"
+    pinecone_dimension: int = 64
 
 
 class Neo4jConfig(BaseModel):
@@ -91,12 +98,18 @@ class MongoConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    provider: str = "ollama"
+    provider: str = "groq"
     base_url: str = "http://localhost:11434"
     model: str = "gemma3:latest"
     timeout_seconds: float = 5.0
     connect_timeout_seconds: float = 0.3
     min_confidence_threshold: float = 0.70
+    groq_enabled: bool = True
+    groq_api_key: str = ""
+    groq_model: str = "openai/gpt-oss-20b"
+    groq_base_url: str = "https://api.groq.com/openai/v1"
+    groq_timeout_seconds: float = 15.0
+    groq_connect_timeout_seconds: float = 2.0
 
 
 class SystemConfig(BaseModel):
@@ -136,10 +149,23 @@ def _overlay_env(cfg: AppConfig) -> AppConfig:
 
     cfg.llm.base_url = _env("OLLAMA_BASE_URL", cfg.llm.base_url)
     cfg.llm.model = _env("OLLAMA_MODEL", cfg.llm.model)
+    cfg.llm.groq_enabled = _env_bool("GROQ_ENABLED", cfg.llm.groq_enabled)
+    cfg.llm.groq_api_key = _env("GROQ_API_KEY", cfg.llm.groq_api_key)
+    cfg.llm.groq_model = _env("GROQ_MODEL", cfg.llm.groq_model)
+    cfg.llm.groq_base_url = _env("GROQ_BASE_URL", cfg.llm.groq_base_url)
+    if cfg.llm.groq_api_key:
+        cfg.llm.provider = "groq"
 
     chroma_dir = _env("CHROMA_DIR")
     if chroma_dir:
         cfg.memory.chroma_db_dir = chroma_dir
+    cfg.memory.pinecone_enabled = _env_bool("PINECONE_ENABLED", cfg.memory.pinecone_enabled)
+    cfg.memory.pinecone_api_key = _env("PINECONE_API_KEY", cfg.memory.pinecone_api_key)
+    cfg.memory.pinecone_index = _env("PINECONE_INDEX", cfg.memory.pinecone_index)
+    cfg.memory.pinecone_host = _env("PINECONE_HOST", cfg.memory.pinecone_host)
+    cfg.memory.pinecone_cloud = _env("PINECONE_CLOUD", cfg.memory.pinecone_cloud)
+    cfg.memory.pinecone_region = _env("PINECONE_REGION", cfg.memory.pinecone_region)
+    cfg.memory.pinecone_dimension = _env_int("PINECONE_DIMENSION", cfg.memory.pinecone_dimension)
 
     cfg.system.offline_mode = _env_bool("OFFLINE_MODE", cfg.system.offline_mode)
     cfg.system.device_target = _env("DEVICE_TARGET", cfg.system.device_target)

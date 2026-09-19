@@ -29,7 +29,9 @@ def test_api_healthz_no_key_required():
         assert "dependencies" in data
         assert "mongo" in data["dependencies"]
         assert "neo4j" in data["dependencies"]
+        assert "pinecone" in data["dependencies"]
         assert "chroma" in data["dependencies"]
+        assert "groq" in data["dependencies"]
         assert "ollama" in data["dependencies"]
         assert "version" in data
         if res.status_code == 200:
@@ -68,10 +70,13 @@ def test_healthz_503_when_mongo_and_chroma_down(monkeypatch):
     async def mongo_down():
         return False
 
+    vs = telemetry_api.graph.memory_agent.episodic_memory.vector_store
     with TestClient(app) as c:
         monkeypatch.setattr(telemetry_api.document_store, "ping", mongo_down)
         monkeypatch.setattr(
-            telemetry_api.graph.memory_agent.episodic_memory.vector_store, "ping", lambda: False
+            vs,
+            "health",
+            lambda: {"engine": "chroma", "pinecone": "down", "chroma": "down", "ok": False},
         )
         res = c.get("/healthz")
         assert res.status_code == 503
@@ -94,7 +99,7 @@ def test_compose_api_waits_for_healthy_dependencies():
     deps = compose["services"]["api"]["depends_on"]
     assert deps["mongo"]["condition"] == "service_healthy"
     assert deps["neo4j"]["condition"] == "service_healthy"
-    assert deps["ollama"]["condition"] == "service_healthy"
+    assert deps["ollama"]["condition"] == "service_started"
     assert compose["services"]["api"].get("env_file") in (".env", [".env"])
 
 
@@ -131,6 +136,9 @@ def test_api_memory_endpoint(client):
     assert res.status_code == 200
     data = res.json()
     assert "episodic_experiences_count" in data
+    assert "episodic_experiences_count" in data
+    assert "vector_engine" in data
+    assert data["vector_engine"] in ("pinecone", "chroma")
     assert "semantic_rules_count" in data
     assert "knowledge_graph" in data
     assert "last_retrieval" in data
