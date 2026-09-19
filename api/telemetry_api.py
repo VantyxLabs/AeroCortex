@@ -1,4 +1,3 @@
-import hashlib
 import logging
 import secrets
 from contextlib import asynccontextmanager
@@ -9,6 +8,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from config import config
+from llm.groq_client import GroqClient
 from llm.ollama_client import OllamaClient
 from memory.document_store import DocumentStore, get_document_store
 from models import UAVTelemetry
@@ -33,23 +33,27 @@ async def lifespan(app: FastAPI):
         logger.warning("Mongo startup failed: %s", exc)
 
     kg = graph.memory_agent.knowledge_graph
-    if kg.engine == "neo4j":
-        try:
-            if kg._neo and kg._neo.node_count() == 0:
-                kg._neo.seed_ontology()
-        except Exception as exc:
-            logger.warning("Neo4j seed failed: %s", exc)
+    try:
+        engine = kg.reconnect()
+        logger.info("Knowledge graph engine after startup: %s", engine)
+    except Exception as exc:
+        logger.warning("Neo4j reconnect failed: %s", exc)
 
     try:
-        graph.memory_agent.episodic_memory.vector_store.count()
+        engine = graph.memory_agent.episodic_memory.vector_store.reconnect()
+        logger.info("Vector store engine after startup: %s", engine)
     except Exception as exc:
-        logger.warning("Chroma warmup failed: %s", exc)
+        logger.warning("Vector store warmup failed: %s", exc)
 
-    ollama = OllamaClient()
-    if ollama.ping():
-        logger.info("Planner path: ollama (%s)", config.llm.model)
+    groq = GroqClient()
+    if groq.ping():
+        logger.info("Planner path: groq (%s)", groq.model)
     else:
-        logger.info("Planner path: offline_reasoner")
+        ollama = OllamaClient()
+        if ollama.ping():
+            logger.info("Planner path: ollama (%s)", config.llm.model)
+        else:
+            logger.info("Planner path: offline_reasoner")
 
     yield
 
@@ -76,9 +80,7 @@ EXEMPT_PATHS = {"/healthz", "/docs", "/openapi.json", "/redoc"}
 def _api_key_ok(provided: str, expected: str) -> bool:
     if not expected:
         return True
-    provided_digest = hashlib.sha256(provided.encode("utf-8")).digest()
-    expected_digest = hashlib.sha256(expected.encode("utf-8")).digest()
-    return secrets.compare_digest(provided_digest, expected_digest)
+    return secrets.compare_digest(provided, expected)
 
 
 @app.middleware("http")
@@ -160,19 +162,41 @@ def root():
 @app.get("/healthz")
 async def healthz():
     mongo_ok = await document_store.ping()
-    chroma_ok = graph.memory_agent.episodic_memory.vector_store.ping()
+    vs = graph.memory_agent.episodic_memory.vector_store
+    vector_health = vs.health()
     kg = graph.memory_agent.knowledge_graph
+    kg.reconnect()
     neo_ok = kg.engine == "neo4j" and kg.ping()
+    groq = GroqClient()
+    groq_ok = groq.ping()
     ollama_ok = OllamaClient().ping()
+
+    if groq_ok:
+        groq_status = "ok"
+    elif groq.is_configured:
+        groq_status = "fallback_ollama" if ollama_ok else "fallback_reasoner"
+    else:
+        groq_status = "unset"
+
+    ollama_status = "ok" if ollama_ok else "fallback_reasoner"
+    pine_configured = vector_health["pinecone"] != "unset"
+    vector_ok = bool(vector_health.get("ok"))
 
     dependencies = {
         "mongo": "ok" if mongo_ok else "down",
         "neo4j": "ok" if neo_ok else "fallback_networkx",
-        "chroma": "ok" if chroma_ok else "down",
-        "ollama": "ok" if ollama_ok else "fallback_reasoner",
+        "pinecone": vector_health["pinecone"],
+        "chroma": vector_health["chroma"],
+        "groq": groq_status,
+        "ollama": ollama_status,
     }
-    degraded = (not mongo_ok) or (not neo_ok) or (not chroma_ok) or (not ollama_ok)
-    if not chroma_ok and not mongo_ok:
+    vector_degraded = (
+        vector_health["pinecone"] in ("fallback_chroma", "down")
+        or (not pine_configured and vector_health["chroma"] != "ok")
+    )
+    llm_degraded = (groq.is_configured and not groq_ok) or (not groq.is_configured and not ollama_ok)
+    degraded = (not mongo_ok) or (not neo_ok) or vector_degraded or llm_degraded
+    if not vector_ok and not mongo_ok:
         return JSONResponse(
             status_code=503,
             content={
@@ -186,6 +210,7 @@ async def healthz():
         "dependencies": dependencies,
         "version": config.system.version,
         "engine": kg.get_summary().get("engine"),
+        "vector_engine": vector_health.get("engine"),
     }
 
 
@@ -206,10 +231,12 @@ def receive_telemetry(telemetry: UAVTelemetry):
 @app.get("/status")
 def get_system_status():
     snapshot = graph.working_memory.get_snapshot()
+    kg_summary = graph.memory_agent.knowledge_graph.get_summary()
     return {
         "status": "HEALTHY",
+        "engine": kg_summary.get("engine"),
         "working_memory": snapshot,
-        "kg_summary": graph.memory_agent.knowledge_graph.get_summary()
+        "kg_summary": kg_summary,
     }
 
 
@@ -218,12 +245,31 @@ def get_memory_state():
     rules = [r.model_dump() for r in graph.memory_agent.semantic_memory.get_all_rules()]
     kg_summary = graph.memory_agent.knowledge_graph.get_summary()
     chroma_count = graph.memory_agent.episodic_memory.vector_store.count()
+    vector_engine = getattr(graph.memory_agent.episodic_memory.vector_store, "engine", "chroma")
+    last = graph.memory_agent.last_context
+    candidates = []
+    if last:
+        for item in last.retrieved_experiences:
+            candidates.append({
+                "episode_id": item.episode_id,
+                "action": item.experience.action,
+                "vector_similarity": item.vector_similarity,
+                "graph_relevance": item.graph_relevance,
+                "final_score": item.final_score,
+                "hydrated_from_mongo": item.hydrated_from_mongo,
+            })
 
     return {
         "episodic_experiences_count": chroma_count,
+        "vector_engine": vector_engine,
         "semantic_rules_count": len(rules),
         "semantic_rules": rules,
-        "knowledge_graph": kg_summary
+        "knowledge_graph": kg_summary,
+        "last_retrieval": {
+            "top_recommended_action": last.top_recommended_action if last else None,
+            "retrieval_latency_ms": last.retrieval_latency_ms if last else 0.0,
+            "candidates": candidates,
+        },
     }
 
 
@@ -233,11 +279,12 @@ async def get_missions_history(
     skip: int = Query(0, ge=0),
 ):
     history = await document_store.list_missions(limit=limit, skip=skip)
+    total = await document_store.count_missions()
     for item in history:
         if "_id" in item:
             item["_id"] = str(item["_id"])
     return {
-        "total_events": len(history),
+        "total_events": total,
         "limit": limit,
         "skip": skip,
         "history": history,

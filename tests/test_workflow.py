@@ -33,6 +33,8 @@ def test_workflow_failure_recovery_closed_loop(graph):
     # 3. Planner reasoning
     assert state["planner_plan"] is not None
     assert state["planner_plan"].action is not None
+    assert state["planner_plan"].source in ("groq", "ollama", "offline_reasoner")
+    assert state["planner_plan"].plan_latency_ms >= 0.0
     
     # 4. Safety validation
     assert state["safety_verdict"] is not None
@@ -46,6 +48,7 @@ def test_workflow_failure_recovery_closed_loop(graph):
     assert state["learning_result"] is not None
     assert state["learning_result"].get("status") == "SUCCESS"
     assert state["learning_result"].get("outcome") == "MISSION_SUCCESS"
+    assert "persisted" in state["learning_result"]
 
 def test_workflow_unsafe_plan_triggers_fallback(graph):
     # Craft telemetry with critical battery (< 10%)
@@ -61,4 +64,5 @@ def test_workflow_unsafe_plan_triggers_fallback(graph):
         "Deterministic-Safety-Fallback",
         "offline_reasoner",
         "ollama",
+        "groq",
     )

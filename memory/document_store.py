@@ -36,6 +36,8 @@ class DocumentStore:
             self.available = False
 
     def _db_sync(self):
+        if self._sync_client is None or not self.available:
+            self._connect_sync()
         if not self.available or self._sync_client is None:
             return None
         return self._sync_client[self.db_name]
@@ -108,6 +110,7 @@ class DocumentStore:
         if db is None:
             return None
         try:
+            episode = dict(episode)
             episode_id = str(episode.get("_id") or uuid.uuid4())
             episode["_id"] = episode_id
             db.episodes.insert_one(episode)
@@ -137,6 +140,7 @@ class DocumentStore:
     async def insert_episode(self, episode: Dict[str, Any]) -> Optional[str]:
         try:
             db = self._async_db()
+            episode = dict(episode)
             episode_id = str(episode.get("_id") or uuid.uuid4())
             episode["_id"] = episode_id
             await db.episodes.insert_one(episode)
@@ -188,10 +192,13 @@ class DocumentStore:
     async def list_missions(self, limit: int = 50, skip: int = 0) -> List[Dict[str, Any]]:
         try:
             db = self._async_db()
-            cursor = db.episodes.find().sort("timestamp", -1).skip(skip).limit(limit)
-            return await cursor.to_list(length=limit)
+            cursor = db.missions.find().sort("started_at", -1).skip(skip).limit(limit)
+            docs = await cursor.to_list(length=limit)
+            self.available = True
+            return docs
         except Exception as exc:
             logger.warning("Mongo list_missions failed: %s", exc)
+            self.available = False
             return []
 
     def list_missions_sync(self, limit: int = 50, skip: int = 0) -> List[Dict[str, Any]]:
@@ -199,9 +206,31 @@ class DocumentStore:
         if db is None:
             return []
         try:
-            return list(db.episodes.find().sort("timestamp", -1).skip(skip).limit(limit))
-        except Exception:
+            return list(db.missions.find().sort("started_at", -1).skip(skip).limit(limit))
+        except Exception as exc:
+            logger.warning("Mongo list_missions failed: %s", exc)
+            self.available = False
             return []
+
+    async def count_missions(self) -> int:
+        try:
+            db = self._async_db()
+            total = await db.missions.count_documents({})
+            self.available = True
+            return int(total)
+        except Exception:
+            self.available = False
+            return 0
+
+    def count_missions_sync(self) -> int:
+        db = self._db_sync()
+        if db is None:
+            return 0
+        try:
+            return int(db.missions.count_documents({}))
+        except Exception:
+            self.available = False
+            return 0
 
     async def upsert_rule(self, rule: Dict[str, Any]) -> None:
         try:

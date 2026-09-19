@@ -33,6 +33,12 @@ class SemanticMemory:
                         payload = dict(item)
                         if "rule_id" not in payload and payload.get("_id"):
                             payload["rule_id"] = str(payload["_id"])
+                        if not payload.get("trigger") and payload.get("if_condition"):
+                            payload["trigger"] = payload["if_condition"]
+                        if not payload.get("action") and payload.get("then_action"):
+                            payload["action"] = payload["then_action"]
+                        if not payload.get("condition"):
+                            payload["condition"] = payload.get("if_condition") or ""
                         payload.pop("_id", None)
                         rule = SemanticRule(**{
                             k: v for k, v in payload.items()

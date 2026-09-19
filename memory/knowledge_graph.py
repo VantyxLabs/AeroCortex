@@ -312,21 +312,63 @@ class NetworkXBackend:
 class Neo4jBackend:
     """Bolt-backed knowledge graph with Cypher retrieval and real reinforcement."""
 
-    def __init__(self):
+    def __init__(self, uri: Optional[str] = None, user: Optional[str] = None, password: Optional[str] = None):
         if not NEO4J_AVAILABLE:
             raise RuntimeError("neo4j driver is not installed")
         self.lr = getattr(config.memory, "reinforcement_rate", 0.2)
-        self.driver = GraphDatabase.driver(
-            config.neo4j.uri,
-            auth=(config.neo4j.user, config.neo4j.password),
-            connection_timeout=0.5,
-            connection_acquisition_timeout=1.0,
-            max_transaction_retry_time=0.0,
-        )
+        uri = uri or config.neo4j.uri
+        user = user if user is not None else config.neo4j.user
+        password = password if password is not None else config.neo4j.password
+        self.driver = self._connect(uri, user, password)
         if not self.ping():
             self.close()
-            raise RuntimeError("Neo4j ping failed")
+            raise RuntimeError(f"Neo4j ping failed for {uri}")
         self.ensure_constraints()
+
+    @staticmethod
+    def _connect(uri: str, user: str, password: str):
+        cloud = uri.startswith("neo4j+s://") or uri.startswith("neo4j+ssc://") or uri.startswith("bolt+s://")
+        timeout = 20.0 if cloud else 3.0
+        driver = GraphDatabase.driver(
+            uri,
+            auth=(user, password),
+            connection_timeout=timeout,
+            connection_acquisition_timeout=timeout,
+            max_transaction_retry_time=0.0,
+        )
+        return driver
+
+    @classmethod
+    def connect_with_fallback(cls) -> "Neo4jBackend":
+        """
+        Prefer configured URI (Aura / compose). If cloud Bolt is refused,
+        fall back to local Docker bolt://localhost:7687 so the API stays on Neo4j.
+        """
+        primary_uri = config.neo4j.uri
+        attempts = [(primary_uri, config.neo4j.user, config.neo4j.password)]
+        if primary_uri.startswith("neo4j+s://"):
+            host = primary_uri.split("://", 1)[1]
+            attempts.append((f"bolt+s://{host}", config.neo4j.user, config.neo4j.password))
+        local_uri = "bolt://localhost:7687"
+        if not any(u == local_uri for u, _, _ in attempts):
+            attempts.append((local_uri, "neo4j", "change-me-local-dev-password"))
+            # also try the configured password against local (compose may use NEO4J_PASSWORD)
+            if config.neo4j.password and config.neo4j.password != "change-me-local-dev-password":
+                attempts.append((local_uri, config.neo4j.user or "neo4j", config.neo4j.password))
+
+        last_exc: Optional[Exception] = None
+        for uri, user, password in attempts:
+            try:
+                backend = cls(uri=uri, user=user, password=password)
+                if uri != primary_uri:
+                    logger.warning("Neo4j primary %s unreachable; connected via %s", primary_uri, uri)
+                else:
+                    logger.info("Neo4j connected via %s", uri)
+                return backend
+            except Exception as exc:
+                last_exc = exc
+                logger.warning("Neo4j connect failed (%s): %s", uri, exc)
+        raise RuntimeError(f"Neo4j unavailable: {last_exc}")
 
     def close(self) -> None:
         try:
@@ -340,7 +382,8 @@ class Neo4jBackend:
             with self.driver.session() as session:
                 session.run("RETURN 1").consume()
             return True
-        except Exception:
+        except Exception as exc:
+            logger.warning("Neo4j ping failed: %s", exc)
             return False
 
     def ensure_constraints(self) -> None:
@@ -530,7 +573,7 @@ class KnowledgeGraph:
 
         if config.neo4j.enabled:
             try:
-                neo = Neo4jBackend()
+                neo = Neo4jBackend.connect_with_fallback()
                 self._neo = neo
                 self._backend = neo
                 self.engine = "neo4j"
@@ -610,6 +653,35 @@ class KnowledgeGraph:
             return self._backend.ping()
         except Exception:
             return False
+
+    def reconnect(self) -> str:
+        """Retry Bolt after compose deps are healthy so we do not stay on NetworkX."""
+        if not config.neo4j.enabled:
+            return self.engine
+        if self.engine == "neo4j" and self.ping():
+            try:
+                self._neo.ensure_constraints()
+                if self._neo.node_count() == 0:
+                    self._neo.seed_ontology()
+            except Exception as exc:
+                logger.warning("Neo4j seed/constraints failed: %s", exc)
+            return self.engine
+        try:
+            if self._neo:
+                self._neo.close()
+            neo = Neo4jBackend.connect_with_fallback()
+            self._neo = neo
+            self._backend = neo
+            self.engine = "neo4j"
+            if neo.node_count() == 0:
+                neo.seed_ontology()
+            logger.info("Knowledge graph engine: Neo4j")
+        except Exception as exc:
+            logger.warning("Neo4j unavailable, using NetworkX: %s", exc)
+            self._backend = self._nx
+            self.engine = "networkx"
+            self._neo = None
+        return self.engine
 
     def close(self) -> None:
         if self._neo:

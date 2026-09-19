@@ -33,6 +33,11 @@ memory:
   semantic_rules_path: "data/knowledge/semantic_rules.json"
   knowledge_graph_path: "data/knowledge/knowledge_graph.json"
   reinforcement_rate: 0.2
+  pinecone_enabled: true
+  pinecone_index: "aerocortex-episodes"
+  pinecone_cloud: "aws"
+  pinecone_region: "us-east-1"
+  pinecone_dimension: 64
 
 neo4j:
   uri: "bolt://localhost:7687"
@@ -44,7 +49,12 @@ mongo:
   db_name: "aerocortex"
 
 llm:
-  provider: "ollama"
+  provider: "groq"
+  groq_enabled: true
+  groq_model: "openai/gpt-oss-20b"
+  groq_base_url: "https://api.groq.com/openai/v1"
+  groq_timeout_seconds: 15.0
+  groq_connect_timeout_seconds: 2.0
   base_url: "http://localhost:11434"
   model: "gemma3:latest"
   timeout_seconds: 5.0
