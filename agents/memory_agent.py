@@ -1,11 +1,12 @@
+import asyncio
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from config import config
 from models import (
     UAVTelemetry, SituationReport, EpisodicExperience, RetrievedExperience,
-    SemanticRule, HybridMemoryContext
+    HybridMemoryContext
 )
 from memory.episodic_memory import EpisodicMemory
 from memory.semantic_memory import SemanticMemory
@@ -23,19 +24,36 @@ def minmax_normalize(values: List[float]) -> List[float]:
     return [(v - lo) / (hi - lo) for v in values]
 
 
+def chroma_distance_to_similarity(distance: float, space: str = "cosine") -> float:
+    """Convert a Chroma distance into a similarity in [0, 1]."""
+    d = float(distance)
+    if space == "l2":
+        sim = 1.0 / (1.0 + max(d, 0.0))
+    else:
+        sim = 1.0 - d
+    return max(0.0, min(1.0, sim))
+
+
 def fuse_hybrid_scores(
     vector_items: List[Dict[str, Any]],
     graph_items: List[Dict[str, Any]],
     w_vector: float = 0.6,
     w_graph: float = 0.4,
+    space: str = "cosine",
 ) -> List[Dict[str, Any]]:
     """
-    Normalize Chroma similarity and graph relevance independently, then fuse.
-    vector_items: [{episode_id, action, vector_similarity, experience?}]
+    Convert Chroma distance → similarity, min-max normalize each list, then fuse.
+
+    vector_items: [{episode_id, action, distance? | vector_similarity, experience?}]
     graph_items:  [{action, graph_relevance}]
     """
     kg_map = {item["action"]: float(item["graph_relevance"]) for item in graph_items}
-    vec_raw = [float(item.get("vector_similarity", 0.0)) for item in vector_items]
+    vec_raw: List[float] = []
+    for item in vector_items:
+        if item.get("distance") is not None:
+            vec_raw.append(chroma_distance_to_similarity(item["distance"], space))
+        else:
+            vec_raw.append(float(item.get("vector_similarity", 0.0)))
     graph_raw = [float(kg_map.get(item.get("action"), 0.0)) for item in vector_items]
     vec_norm = minmax_normalize(vec_raw)
     graph_norm = minmax_normalize(graph_raw)
@@ -76,6 +94,59 @@ class MemoryAgent:
         self.w_vector = config.memory.hybrid_weights.vector_similarity
         self.w_graph = config.memory.hybrid_weights.graph_relevance
         self.top_k = config.memory.top_k_episodes
+        self.last_context: Optional[HybridMemoryContext] = None
+
+    def _fetch_chroma_and_graph(
+        self, query_text: str, failure_type: str, cond_hint: str
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Query Chroma and the knowledge graph concurrently."""
+
+        def _ok(value: Any, fallback: List) -> List:
+            if isinstance(value, BaseException) or value is None:
+                return fallback
+            return value
+
+        async def _gather():
+            chroma_task = asyncio.to_thread(
+                self.episodic_memory.retrieve_similar_experiences, query_text, self.top_k
+            )
+            kg_task = asyncio.to_thread(
+                self.knowledge_graph.query_action_relevance,
+                failure_type,
+                cond_hint,
+                5,
+            )
+            return await asyncio.gather(chroma_task, kg_task, return_exceptions=True)
+
+        try:
+            asyncio.get_running_loop()
+            in_loop = True
+        except RuntimeError:
+            in_loop = False
+
+        if not in_loop:
+            raw_episodes, kg_candidates = asyncio.run(_gather())
+            return _ok(raw_episodes, []), _ok(kg_candidates, [])
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            chroma_fut = pool.submit(
+                self.episodic_memory.retrieve_similar_experiences, query_text, self.top_k
+            )
+            kg_fut = pool.submit(
+                self.knowledge_graph.query_action_relevance,
+                failure_type,
+                cond_hint,
+                5,
+            )
+            try:
+                raw_episodes = chroma_fut.result()
+            except Exception:
+                raw_episodes = []
+            try:
+                kg_candidates = kg_fut.result()
+            except Exception:
+                kg_candidates = []
+        return raw_episodes or [], kg_candidates or []
 
     def retrieve_context(
         self,
@@ -85,13 +156,15 @@ class MemoryAgent:
         start_t = time.time()
 
         if not situation.anomaly_detected or situation.failure_type == "NONE":
-            return HybridMemoryContext(
+            context = HybridMemoryContext(
                 retrieved_experiences=[],
                 semantic_rules=[],
                 graph_paths=[],
                 retrieval_latency_ms=0.0,
                 top_recommended_action="CONTINUE_MISSION"
             )
+            self.last_context = context
+            return context
 
         query_text = (
             f"Failure: {situation.failure_type}. "
@@ -106,18 +179,9 @@ class MemoryAgent:
         elif telemetry.battery_level < 30.0:
             cond_hint = "RESERVE_BATTERY"
 
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            chroma_fut = pool.submit(
-                self.episodic_memory.retrieve_similar_experiences, query_text, self.top_k
-            )
-            kg_fut = pool.submit(
-                self.knowledge_graph.query_action_relevance,
-                situation.failure_type,
-                cond_hint,
-                5,
-            )
-            raw_episodes = chroma_fut.result()
-            kg_candidates = kg_fut.result()
+        raw_episodes, kg_candidates = self._fetch_chroma_and_graph(
+            query_text, situation.failure_type, cond_hint
+        )
 
         vector_items = []
         for ep_data in raw_episodes:
@@ -125,6 +189,7 @@ class MemoryAgent:
             vector_items.append({
                 "episode_id": ep_data.get("episode_id") or exp.episode_id,
                 "action": exp.action,
+                "distance": ep_data.get("distance"),
                 "vector_similarity": ep_data.get("vector_similarity", 0.0),
                 "experience": exp,
             })
@@ -148,13 +213,15 @@ class MemoryAgent:
 
         latency = round((time.time() - start_t) * 1000, 2)
 
-        return HybridMemoryContext(
+        context = HybridMemoryContext(
             retrieved_experiences=ranked_experiences,
             semantic_rules=matched_rules,
             graph_paths=kg_candidates,
             retrieval_latency_ms=latency,
             top_recommended_action=top_action
         )
+        self.last_context = context
+        return context
 
     def _hydrate_from_mongo(self, fused: List[Dict[str, Any]]) -> List[RetrievedExperience]:
         ids = [item.get("episode_id") for item in fused if item.get("episode_id")]
