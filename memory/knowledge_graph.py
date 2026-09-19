@@ -340,38 +340,23 @@ class Neo4jBackend:
 
     @classmethod
     def connect_with_fallback(cls) -> "Neo4jBackend":
-        """
-        Prefer configured URI (Aura / compose). If cloud Bolt is refused,
-        fall back to local Docker bolt://localhost:7687 so the API stays on Neo4j.
-        """
+        """Connect to configured Neo4j (Aura neo4j+s://). No localhost Docker fallback."""
         primary_uri = (config.neo4j.uri or "").strip()
         user = (config.neo4j.user or "neo4j").strip()
         password = (config.neo4j.password or "").strip()
         if not primary_uri:
             raise RuntimeError("NEO4J_URI is empty")
+        if primary_uri.startswith("bolt://localhost") or "localhost:7687" in primary_uri:
+            raise RuntimeError(
+                "NEO4J_URI must be Aura neo4j+s://… (localhost Docker Bolt is disabled)"
+            )
         if not password:
-            raise RuntimeError("NEO4J_PASSWORD is empty")
+            raise RuntimeError("NEO4J_PASSWORD is empty — set the AuraDB password")
 
         attempts = [(primary_uri, user, password)]
         if primary_uri.startswith("neo4j+s://"):
             host = primary_uri.split("://", 1)[1]
             attempts.append((f"bolt+s://{host}", user, password))
-        local_uri = "bolt://localhost:7687"
-        # Skip local Docker fallback on cloud hosts (Render/Railway have no Neo4j on localhost).
-        skip_local = primary_uri.startswith(("neo4j+s://", "neo4j+ssc://", "bolt+s://"))
-        cloud_host = bool(
-            __import__("os").environ.get("RENDER")
-            or __import__("os").environ.get("RAILWAY_ENVIRONMENT")
-            or __import__("os").environ.get("PORT")
-        )
-        if cloud_host and primary_uri.startswith("bolt://localhost"):
-            raise RuntimeError(
-                "NEO4J_URI points at localhost on a cloud host; set Aura neo4j+s:// URI"
-            )
-        if not skip_local and not cloud_host and not any(u == local_uri for u, _, _ in attempts):
-            attempts.append((local_uri, "neo4j", "change-me-local-dev-password"))
-            if password != "change-me-local-dev-password":
-                attempts.append((local_uri, user, password))
 
         last_exc: Optional[Exception] = None
         for uri, u, pw in attempts:
