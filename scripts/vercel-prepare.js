@@ -1,6 +1,9 @@
 /**
- * Copy dashboard/static → public and write config.json from Vercel env.
- * Env (available at build time):
+ * Copy dashboard/static → public for Vercel.
+ * HTML references /static/css and /static/js (same as local FastAPI mount),
+ * so assets must live under public/static/, with index.html at public/.
+ *
+ * Env (build time):
  *   AEROCORTEX_API_URL  — Render origin (default https://aerocortex.onrender.com)
  *   AEROCORTEX_API_KEY  — same as Render API_KEY
  */
@@ -10,6 +13,7 @@ const path = require("path");
 const root = path.join(__dirname, "..");
 const src = path.join(root, "dashboard", "static");
 const dest = path.join(root, "public");
+const destStatic = path.join(dest, "static");
 
 function rm(dir) {
   if (!fs.existsSync(dir)) return;
@@ -37,7 +41,14 @@ if (!fs.existsSync(src)) {
 }
 
 if (fs.existsSync(dest)) rm(dest);
-copy(src, dest);
+fs.mkdirSync(dest, { recursive: true });
+
+// index at site root
+fs.copyFileSync(path.join(src, "index.html"), path.join(dest, "index.html"));
+
+// assets under /static/* to match <link href="/static/css/..."> and scripts
+copy(path.join(src, "css"), path.join(destStatic, "css"));
+copy(path.join(src, "js"), path.join(destStatic, "js"));
 
 const upstream = (
   process.env.AEROCORTEX_API_URL ||
@@ -65,4 +76,6 @@ const config = {
 };
 
 fs.writeFileSync(path.join(dest, "config.json"), JSON.stringify(config, null, 2));
-console.log("vercel-prepare: public/ ready · upstream=" + upstream);
+console.log(
+  "vercel-prepare: public/index.html + public/static/{css,js} · upstream=" + upstream
+);
