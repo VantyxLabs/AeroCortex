@@ -269,7 +269,11 @@ curl -X POST http://localhost:8000/telemetry \
   -d "{\"mission_id\":\"M1\",\"altitude\":120,\"gps_status\":\"degraded\",\"gps_accuracy\":6.5}"
 ```
 
-Python SDK (`sdk/client.py`):
+Python SDK (`sdk/client.py`) — install locally, not PyPI:
+
+```bash
+pip install -e .
+```
 
 ```python
 from sdk import AeroCortexClient
