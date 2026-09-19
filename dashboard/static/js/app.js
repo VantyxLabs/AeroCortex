@@ -242,15 +242,28 @@
       "</tbody></table></div>";
   }
 
-  function renderKg(memoryPayload, scenario) {
+  function renderKg(memoryPayload, scenario, stepOverride) {
     const el = $("panel-kg");
     if (!el) return;
-    const kg = (memoryPayload && memoryPayload.knowledge_graph) || {};
-    const paths =
+    const kg =
+      (stepOverride && stepOverride.knowledge_graph) ||
+      (memoryPayload && memoryPayload.knowledge_graph) ||
+      {};
+    let paths =
+      (stepOverride && stepOverride.graph_paths) ||
+      (stepOverride &&
+        stepOverride.memory_context &&
+        stepOverride.memory_context.graph_paths) ||
+      (state.lastResult && state.lastResult.graph_paths) ||
       (state.lastResult &&
         state.lastResult.memory_context &&
         state.lastResult.memory_context.graph_paths) ||
+      (memoryPayload &&
+        memoryPayload.last_retrieval &&
+        memoryPayload.last_retrieval.graph_paths) ||
       [];
+
+    if (!Array.isArray(paths)) paths = [];
 
     if (paths.length) {
       el.innerHTML =
@@ -265,6 +278,8 @@
               fmt(p.graph_relevance, 3) +
               " · Scenario " +
               escapeHtml(scenario || "—") +
+              " · Engine " +
+              escapeHtml(String(kg.engine || "—")) +
               "</div></li>"
             );
           })
@@ -274,8 +289,10 @@
     }
 
     el.innerHTML =
-      '<p class="muted-note">Graph paths nominal. Engine ' +
+      '<p class="muted-note">No graph paths for this step yet. Engine ' +
       escapeHtml(String(kg.engine || "—")) +
+      " · nodes " +
+      escapeHtml(String(kg.nodes_count != null ? kg.nodes_count : "—")) +
       ".</p>";
   }
 
@@ -347,7 +364,7 @@
     renderSafety(step.safety_verdict, step.final_plan);
     renderLogs(step.logs);
     renderMemory(null, step);
-    renderKg(null, ($("scenario") && $("scenario").value) || "");
+    renderKg(null, ($("scenario") && $("scenario").value) || "", step);
     renderCharts();
   }
 
@@ -361,7 +378,7 @@
     const mem = await AeroAPI.memory();
     renderStats(mem);
     renderMemory(mem, state.lastResult);
-    renderKg(mem, ($("scenario") && $("scenario").value) || "");
+    renderKg(mem, ($("scenario") && $("scenario").value) || "", state.lastResult);
     return mem;
   }
 

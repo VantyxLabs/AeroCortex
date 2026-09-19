@@ -1,9 +1,34 @@
-import time
+import json
+import logging
 from typing import List, Dict, Any, Optional
+
 from models import UAVTelemetry
 from simulation.telemetry_generator import TelemetryGenerator
 from simulation.failure_scenarios import FailureScenarioInjector
 from orchestration.graph import AeroCortexGraph
+
+logger = logging.getLogger("aerocortex.simulator")
+
+
+def _safe_dump(obj: Any) -> Any:
+    """Serialize Pydantic models (and nested structures) to JSON-safe dicts."""
+    if obj is None:
+        return None
+    if hasattr(obj, "model_dump"):
+        try:
+            return obj.model_dump(mode="json")
+        except Exception:
+            try:
+                return json.loads(obj.model_dump_json())
+            except Exception as exc:
+                logger.warning("model_dump failed: %s", exc)
+                return None
+    if isinstance(obj, dict):
+        return {k: _safe_dump(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_safe_dump(v) for v in obj]
+    return obj
+
 
 class MissionSimulator:
     """
@@ -17,25 +42,39 @@ class MissionSimulator:
         self.history: List[Dict[str, Any]] = []
 
     def run_step(self, scenario: str = "NORMAL") -> Dict[str, Any]:
-        # Generate base telemetry
         t = self.generator.step(dt=1.0)
-        
-        # Apply scenario if non-normal
+
         if scenario != "NORMAL":
             t = FailureScenarioInjector.apply_scenario(t, scenario)
-            
-        # Process through AeroCortex LangGraph pipeline
+
         result = self.graph.run(t)
-        
+        memory_context = _safe_dump(result.get("memory_context"))
+        # Prefer live agent context if LangGraph state dropped memory_context.
+        if memory_context is None and getattr(self.graph, "memory_agent", None):
+            last = getattr(self.graph.memory_agent, "last_context", None)
+            memory_context = _safe_dump(last)
+
+        graph_paths = []
+        if isinstance(memory_context, dict):
+            graph_paths = memory_context.get("graph_paths") or []
+
+        kg_summary = {}
+        try:
+            kg_summary = self.graph.memory_agent.knowledge_graph.get_summary()
+        except Exception:
+            kg_summary = {}
+
         step_record = {
             "step": self.generator.step_idx,
             "scenario": scenario,
-            "telemetry": t.model_dump(),
-            "situation": result.get("situation").model_dump() if result.get("situation") else None,
-            "planner_plan": result.get("planner_plan").model_dump() if result.get("planner_plan") else None,
-            "safety_verdict": result.get("safety_verdict").model_dump() if result.get("safety_verdict") else None,
-            "final_plan": result.get("final_plan").model_dump() if result.get("final_plan") else None,
-            "memory_context": result.get("memory_context").model_dump() if result.get("memory_context") else None,
+            "telemetry": _safe_dump(t),
+            "situation": _safe_dump(result.get("situation")),
+            "planner_plan": _safe_dump(result.get("planner_plan")),
+            "safety_verdict": _safe_dump(result.get("safety_verdict")),
+            "final_plan": _safe_dump(result.get("final_plan")),
+            "memory_context": memory_context,
+            "graph_paths": graph_paths,
+            "knowledge_graph": kg_summary,
             "execution_status": result.get("execution_status", "UNKNOWN"),
             "logs": result.get("logs", []),
         }

@@ -303,6 +303,7 @@ def get_memory_state():
             "top_recommended_action": last.top_recommended_action if last else None,
             "retrieval_latency_ms": last.retrieval_latency_ms if last else 0.0,
             "candidates": candidates,
+            "graph_paths": (last.graph_paths if last else []) or [],
         },
     }
 
