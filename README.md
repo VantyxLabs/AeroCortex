@@ -202,17 +202,17 @@ Copy `.env.example` to `.env`, then:
 docker compose up --build
 ```
 
-Brings up **five** services in order (`mongo` and `neo4j` healthy first; `ollama` starts in parallel as a fallback, then `api`, then `dashboard`):
+Brings up services (`mongo` healthy first; `ollama` in parallel; then `api` + `dashboard`). Neo4j defaults to **Aura** (not local Docker):
 
 | Service | URL |
 |---|---|
 | API + Swagger | http://localhost:8000/docs |
 | Health | http://localhost:8000/healthz |
 | Dashboard | http://localhost:8501 |
-| Neo4j Browser | http://localhost:7474 |
+| Neo4j | Aura console · `neo4j+s://93dda264.databases.neo4j.io` |
 | Ollama | http://localhost:11434 |
 
-The API does not start until Neo4j Bolt and Mongo accept connections, so it should report `engine: Neo4j` instead of silently falling back to NetworkX. Pinecone is the REST vector store; Chroma on `chroma_data` is used only if Pinecone is unset or unreachable.
+Set `NEO4J_URI` / `NEO4J_PASSWORD` in `.env` and on Render to the Aura instance. If Aura is unreachable the API falls back to embedded NetworkX. Pinecone is the REST vector store; Chroma is used only if Pinecone is unset or unreachable.
 
 `GET /healthz` is unauthenticated. Everything else (except `/docs`) requires `X-API-Key`.
 
