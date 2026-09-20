@@ -86,10 +86,10 @@ class MemoryConfig(BaseModel):
 
 
 class Neo4jConfig(BaseModel):
-    uri: str = "bolt://localhost:7687"
+    uri: str = "neo4j+s://93dda264.databases.neo4j.io"
     user: str = "neo4j"
     password: str = ""
-    enabled: bool = False
+    enabled: bool = True
 
 
 class MongoConfig(BaseModel):

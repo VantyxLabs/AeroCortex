@@ -15,7 +15,10 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  # Optional local Neo4j (not used by default — API uses Aura via NEO4J_URI in .env).
+  # Start with: docker compose --profile local-neo4j up neo4j
   neo4j:
+    profiles: ["local-neo4j"]
     image: neo4j:5.18-community
     container_name: aerocortex-neo4j
     env_file: .env
@@ -58,7 +61,7 @@ services:
     env_file: .env
     environment:
       MONGO_URI: mongodb://mongo:27017
-      NEO4J_URI: bolt://neo4j:7687
+      # Neo4j comes from .env (Aura neo4j+s://…). Do not override with local Docker Bolt.
       OLLAMA_BASE_URL: http://ollama:11434
       CHROMA_DIR: data/knowledge/chroma
     ports:
@@ -67,8 +70,6 @@ services:
       - chroma_data:/app/data/knowledge/chroma
     depends_on:
       mongo:
-        condition: service_healthy
-      neo4j:
         condition: service_healthy
       ollama:
         condition: service_started

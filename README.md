@@ -202,17 +202,17 @@ Copy `.env.example` to `.env`, then:
 docker compose up --build
 ```
 
-Brings up **five** services in order (`mongo` and `neo4j` healthy first; `ollama` starts in parallel as a fallback, then `api`, then `dashboard`):
+Brings up services (`mongo` healthy first; `ollama` in parallel; then `api` + `dashboard`). Neo4j defaults to **Aura** (not local Docker):
 
 | Service | URL |
 |---|---|
 | API + Swagger | http://localhost:8000/docs |
 | Health | http://localhost:8000/healthz |
 | Dashboard | http://localhost:8501 |
-| Neo4j Browser | http://localhost:7474 |
+| Neo4j | Aura console · `neo4j+s://93dda264.databases.neo4j.io` |
 | Ollama | http://localhost:11434 |
 
-The API does not start until Neo4j Bolt and Mongo accept connections, so it should report `engine: Neo4j` instead of silently falling back to NetworkX. Pinecone is the REST vector store; Chroma on `chroma_data` is used only if Pinecone is unset or unreachable.
+Set `NEO4J_URI` / `NEO4J_PASSWORD` in `.env` and on Render to the Aura instance. If Aura is unreachable the API falls back to embedded NetworkX. Pinecone is the REST vector store; Chroma is used only if Pinecone is unset or unreachable.
 
 `GET /healthz` is unauthenticated. Everything else (except `/docs`) requires `X-API-Key`.
 
@@ -223,9 +223,14 @@ The API does not start until Neo4j Bolt and Mongo accept connections, so it shou
 | Piece | Host |
 |-------|------|
 | FastAPI + Mongo / Neo4j / Groq / Pinecone | [Render](https://render.com) (Docker) or Railway |
-| Minimalist Monochrome dashboard | [Vercel](https://vercel.com) (static SPA) or local `python main.py --dashboard` |
+| FastAPI serverless (DynamoDB / Bedrock / SQS) | [AWS SAM](docs/AWS_DEPLOY.md) |
+| Minimalist Monochrome dashboard | [Vercel](https://vercel.com), CloudFront, or local `python main.py --dashboard` |
 
 Cloud data services: [MongoDB Atlas](https://www.mongodb.com/atlas) + [Neo4j AuraDB](https://neo4j.com/cloud/aura-free/) + [Pinecone](https://www.pinecone.io/) + [Groq](https://console.groq.com/).
+
+### Deploy on AWS
+
+See **[docs/AWS_DEPLOY.md](docs/AWS_DEPLOY.md)** for the SAM runbook (API Gateway + Lambda, DynamoDB, S3 snapshots, SQS FIFO learning, Bedrock, CloudFront). Spec: [docs/AWS_INTEGRATION_SPEC.md](docs/AWS_INTEGRATION_SPEC.md). AWS mode is opt-in via env vars; unset defaults keep local Mongo / Chroma / inline learning.
 
 The REST API is designed to run **with internet**. Set `GROQ_API_KEY` and `PINECONE_API_KEY` in `.env`. Create a Pinecone serverless index named `aerocortex-episodes` (dimension **64**, metric **cosine**). Groq is the planner; Ollama is not required in the cloud.
 

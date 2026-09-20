@@ -54,12 +54,38 @@
     if (!h) return;
     setText("sys-status", h.status || "—");
     const d = h.dependencies || {};
-    setDep("dep-mongo", d.mongo);
+    const tileMongo = $("tile-mongo");
+    if (tileMongo) {
+      if (d.mongo != null && d.mongo !== "disabled") {
+        tileMongo.hidden = false;
+        setDep("dep-mongo", d.mongo);
+      } else {
+        tileMongo.hidden = true;
+      }
+    }
     setDep("dep-neo4j", d.neo4j);
     setDep("dep-pinecone", d.pinecone);
     setDep("dep-groq", d.groq);
     setDep("dep-vector", h.vector_engine || d.chroma);
     setDep("dep-engine", h.engine);
+    const tileDdb = $("tile-dynamodb");
+    if (tileDdb) {
+      if (d.dynamodb != null) {
+        tileDdb.hidden = false;
+        setDep("dep-dynamodb", d.dynamodb);
+      } else {
+        tileDdb.hidden = true;
+      }
+    }
+    const tileBedrock = $("tile-bedrock");
+    if (tileBedrock) {
+      if (d.bedrock != null) {
+        tileBedrock.hidden = false;
+        setDep("dep-bedrock", d.bedrock);
+      } else {
+        tileBedrock.hidden = true;
+      }
+    }
   }
 
   function renderKpis(t) {
@@ -242,15 +268,28 @@
       "</tbody></table></div>";
   }
 
-  function renderKg(memoryPayload, scenario) {
+  function renderKg(memoryPayload, scenario, stepOverride) {
     const el = $("panel-kg");
     if (!el) return;
-    const kg = (memoryPayload && memoryPayload.knowledge_graph) || {};
-    const paths =
+    const kg =
+      (stepOverride && stepOverride.knowledge_graph) ||
+      (memoryPayload && memoryPayload.knowledge_graph) ||
+      {};
+    let paths =
+      (stepOverride && stepOverride.graph_paths) ||
+      (stepOverride &&
+        stepOverride.memory_context &&
+        stepOverride.memory_context.graph_paths) ||
+      (state.lastResult && state.lastResult.graph_paths) ||
       (state.lastResult &&
         state.lastResult.memory_context &&
         state.lastResult.memory_context.graph_paths) ||
+      (memoryPayload &&
+        memoryPayload.last_retrieval &&
+        memoryPayload.last_retrieval.graph_paths) ||
       [];
+
+    if (!Array.isArray(paths)) paths = [];
 
     if (paths.length) {
       el.innerHTML =
@@ -265,6 +304,8 @@
               fmt(p.graph_relevance, 3) +
               " · Scenario " +
               escapeHtml(scenario || "—") +
+              " · Engine " +
+              escapeHtml(String(kg.engine || "—")) +
               "</div></li>"
             );
           })
@@ -274,8 +315,10 @@
     }
 
     el.innerHTML =
-      '<p class="muted-note">Graph paths nominal. Engine ' +
+      '<p class="muted-note">No graph paths for this step yet. Engine ' +
       escapeHtml(String(kg.engine || "—")) +
+      " · nodes " +
+      escapeHtml(String(kg.nodes_count != null ? kg.nodes_count : "—")) +
       ".</p>";
   }
 
@@ -347,7 +390,7 @@
     renderSafety(step.safety_verdict, step.final_plan);
     renderLogs(step.logs);
     renderMemory(null, step);
-    renderKg(null, ($("scenario") && $("scenario").value) || "");
+    renderKg(null, ($("scenario") && $("scenario").value) || "", step);
     renderCharts();
   }
 
@@ -361,7 +404,7 @@
     const mem = await AeroAPI.memory();
     renderStats(mem);
     renderMemory(mem, state.lastResult);
-    renderKg(mem, ($("scenario") && $("scenario").value) || "");
+    renderKg(mem, ($("scenario") && $("scenario").value) || "", state.lastResult);
     return mem;
   }
 
@@ -521,8 +564,7 @@
       setError(
         "Health " +
           (h && h.status) +
-          " · mongo " +
-          (d.mongo || "?") +
+          (d.dynamodb != null ? " · dynamodb " + d.dynamodb : d.mongo != null ? " · mongo " + d.mongo : "") +
           " · neo4j " +
           (d.neo4j || "?") +
           " · groq " +

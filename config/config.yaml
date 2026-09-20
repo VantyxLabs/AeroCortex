@@ -40,9 +40,9 @@ memory:
   pinecone_dimension: 64
 
 neo4j:
-  uri: "bolt://localhost:7687"
+  uri: "neo4j+s://93dda264.databases.neo4j.io"
   user: "neo4j"
-  enabled: false
+  enabled: true
 
 mongo:
   uri: "mongodb://localhost:27017"

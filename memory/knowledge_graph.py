@@ -145,12 +145,42 @@ class NetworkXBackend:
         self.file_path.parent.mkdir(parents=True, exist_ok=True)
         self.nx_graph = nx.DiGraph()
         self.lr = getattr(config.memory, "reinforcement_rate", 0.2)
+        self._snapshot = None
+        self._snapshot_name = "knowledge_graph.json"
+        try:
+            from cloud.factories import get_snapshot_store
+
+            self._snapshot = get_snapshot_store()
+        except Exception:
+            self._snapshot = None
         self._load_or_seed_graph()
 
     def ping(self) -> bool:
         return True
 
+    def maybe_refresh_from_snapshot(self) -> None:
+        if self._snapshot is None:
+            return
+        try:
+            if self._snapshot.needs_refresh(self._snapshot_name):
+                data = self._snapshot.load_json(self._snapshot_name)
+                if data is not None:
+                    self.nx_graph = nx.node_link_graph(data, edges="links")
+        except Exception:
+            pass
+
     def _load_or_seed_graph(self) -> None:
+        if self._snapshot is not None:
+            try:
+                data = self._snapshot.load_json(self._snapshot_name)
+                if data is not None:
+                    self.nx_graph = nx.node_link_graph(data, edges="links")
+                    return
+                self._seed_default_graph()
+                self.save()
+                return
+            except Exception:
+                pass
         if self.file_path.exists():
             try:
                 with open(self.file_path, "r", encoding="utf-8") as f:
@@ -172,6 +202,8 @@ class NetworkXBackend:
     def save(self) -> None:
         try:
             data = nx.node_link_data(self.nx_graph, edges="links")
+            if self._snapshot is not None:
+                self._snapshot.save_json(self._snapshot_name, data)
             with open(self.file_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
         except Exception:
@@ -340,28 +372,28 @@ class Neo4jBackend:
 
     @classmethod
     def connect_with_fallback(cls) -> "Neo4jBackend":
-        """
-        Prefer configured URI (Aura / compose). If cloud Bolt is refused,
-        fall back to local Docker bolt://localhost:7687 so the API stays on Neo4j.
-        """
-        primary_uri = config.neo4j.uri
-        attempts = [(primary_uri, config.neo4j.user, config.neo4j.password)]
+        """Connect to configured Neo4j (Aura neo4j+s://). No localhost Docker fallback."""
+        primary_uri = (config.neo4j.uri or "").strip()
+        user = (config.neo4j.user or "neo4j").strip()
+        password = (config.neo4j.password or "").strip()
+        if not primary_uri:
+            raise RuntimeError("NEO4J_URI is empty")
+        if primary_uri.startswith("bolt://localhost") or "localhost:7687" in primary_uri:
+            raise RuntimeError(
+                "NEO4J_URI must be Aura neo4j+s://… (localhost Docker Bolt is disabled)"
+            )
+        if not password:
+            raise RuntimeError("NEO4J_PASSWORD is empty — set the AuraDB password")
+
+        attempts = [(primary_uri, user, password)]
         if primary_uri.startswith("neo4j+s://"):
             host = primary_uri.split("://", 1)[1]
-            attempts.append((f"bolt+s://{host}", config.neo4j.user, config.neo4j.password))
-        local_uri = "bolt://localhost:7687"
-        # Skip local Docker fallback on cloud hosts (Render/Railway have no Neo4j on localhost).
-        skip_local = primary_uri.startswith(("neo4j+s://", "neo4j+ssc://", "bolt+s://"))
-        if not skip_local and not any(u == local_uri for u, _, _ in attempts):
-            attempts.append((local_uri, "neo4j", "change-me-local-dev-password"))
-            # also try the configured password against local (compose may use NEO4J_PASSWORD)
-            if config.neo4j.password and config.neo4j.password != "change-me-local-dev-password":
-                attempts.append((local_uri, config.neo4j.user or "neo4j", config.neo4j.password))
+            attempts.append((f"bolt+s://{host}", user, password))
 
         last_exc: Optional[Exception] = None
-        for uri, user, password in attempts:
+        for uri, u, pw in attempts:
             try:
-                backend = cls(uri=uri, user=user, password=password)
+                backend = cls(uri=uri, user=u, password=pw)
                 if uri != primary_uri:
                     logger.warning("Neo4j primary %s unreachable; connected via %s", primary_uri, uri)
                 else:
@@ -595,6 +627,9 @@ class KnowledgeGraph:
     def query_action_relevance(
         self, failure_type: str, condition: Optional[str] = None, k: int = 5
     ) -> List[Dict[str, Any]]:
+        if self.engine == "networkx":
+            self._nx.maybe_refresh_from_snapshot()
+            self.nx_graph = self._nx.nx_graph
         try:
             return self._backend.query_action_relevance(failure_type, condition, k)
         except Exception as exc:

@@ -1,0 +1,465 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: AeroCortex serverless stack (API Lambda + Learning + DynamoDB + S3 +
+  SQS + CloudFront)
+Parameters:
+  AwsRegion:
+    Type: String
+    Default: ap-south-1
+  StageName:
+    Type: String
+    Default: prod
+  SsmPrefix:
+    Type: String
+    Default: /aerocortex/prod
+  BedrockModelId:
+    Type: String
+    Default: ''
+    Description: Leave empty to skip Bedrock tier until model access is enabled.
+  ApiKeyPlaceholder:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: "Optional \u2014 prefer SSM SecureString; used only to seed dashboard\
+      \ config.json deploy."
+Globals:
+  Function:
+    Timeout: 28
+    MemorySize: 2048
+    Tracing: Active
+Resources:
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: $default
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 20
+        ThrottlingRateLimit: 10
+  MissionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+      - AttributeName: mission_id
+        AttributeType: S
+      - AttributeName: episode_id
+        AttributeType: S
+      - AttributeName: gsi_pk
+        AttributeType: S
+      - AttributeName: created_at
+        AttributeType: S
+      KeySchema:
+      - AttributeName: mission_id
+        KeyType: HASH
+      - AttributeName: episode_id
+        KeyType: RANGE
+      GlobalSecondaryIndexes:
+      - IndexName: by_time
+        KeySchema:
+        - AttributeName: gsi_pk
+          KeyType: HASH
+        - AttributeName: created_at
+          KeyType: RANGE
+        Projection:
+          ProjectionType: ALL
+  StateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+      - AttributeName: pk
+        AttributeType: S
+      KeySchema:
+      - AttributeName: pk
+        KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+  SnapshotBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+  DashboardBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+  EpisodeDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      FifoQueue: true
+      QueueName:
+        Fn::Sub: ${AWS::StackName}-episodes-dlq.fifo
+      MessageRetentionPeriod: 1209600
+  EpisodeQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      FifoQueue: true
+      ContentBasedDeduplication: false
+      QueueName:
+        Fn::Sub: ${AWS::StackName}-episodes.fifo
+      VisibilityTimeout: 180
+      RedrivePolicy:
+        deadLetterTargetArn:
+          Fn::GetAtt:
+          - EpisodeDLQ
+          - Arn
+        maxReceiveCount: 3
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      Architectures:
+      - x86_64
+      MemorySize: 2048
+      Timeout: 28
+      Tracing: Active
+      Environment:
+        Variables:
+          MISSION_STORE: dynamodb
+          WORKING_MEMORY_BACKEND: dynamodb
+          SIM_STATE_BACKEND: dynamodb
+          KNOWLEDGE_SNAPSHOT_BACKEND: s3
+          LEARNING_MODE: async
+          PLANNER_TIERS: bedrock,groq,offline
+          VECTOR_FALLBACK: none
+          MISSIONS_TABLE:
+            Ref: MissionsTable
+          STATE_TABLE:
+            Ref: StateTable
+          SNAPSHOT_BUCKET:
+            Ref: SnapshotBucket
+          SNAPSHOT_PREFIX: snapshots/
+          EPISODE_QUEUE_URL:
+            Ref: EpisodeQueue
+          SSM_PREFIX:
+            Ref: SsmPrefix
+          BEDROCK_MODEL_ID:
+            Ref: BedrockModelId
+          BEDROCK_REGION:
+            Ref: AwsRegion
+          METRICS_ENABLED: 'true'
+          POWERTOOLS_METRICS_NAMESPACE: AeroCortex
+          LAZY_RUNTIME: '1'
+      Policies:
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: MissionsTable
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: StateTable
+      - S3ReadPolicy:
+          BucketName:
+            Ref: SnapshotBucket
+      - SQSSendMessagePolicy:
+          QueueName:
+            Fn::GetAtt:
+            - EpisodeQueue
+            - QueueName
+      - Statement:
+        - Effect: Allow
+          Action:
+          - ssm:GetParameters
+          - ssm:GetParameter
+          Resource:
+            Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmPrefix}/*
+        - Effect: Allow
+          Action:
+          - bedrock:InvokeModel
+          Resource: '*'
+      Events:
+        Any:
+          Type: HttpApi
+          Properties:
+            ApiId:
+              Ref: HttpApi
+            Path: /{proxy+}
+            Method: ANY
+        Root:
+          Type: HttpApi
+          Properties:
+            ApiId:
+              Ref: HttpApi
+            Path: /
+            Method: ANY
+      ImageUri: apifunction:aerocortex-api
+    Metadata:
+      DockerContext: C:\Users\ashih\Downloads\AeroCortex
+      DockerTag: aerocortex-api
+      Dockerfile: Dockerfile.lambda
+      SamResourceId: ApiFunction
+  LearningFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      Architectures:
+      - x86_64
+      MemorySize: 1024
+      Timeout: 30
+      Tracing: Active
+      ImageConfig:
+        Command:
+        - learning_handler.handler
+      Environment:
+        Variables:
+          MISSION_STORE: dynamodb
+          KNOWLEDGE_SNAPSHOT_BACKEND: s3
+          LEARNING_MODE: inline
+          VECTOR_FALLBACK: none
+          MISSIONS_TABLE:
+            Ref: MissionsTable
+          SNAPSHOT_BUCKET:
+            Ref: SnapshotBucket
+          SNAPSHOT_PREFIX: snapshots/
+          SSM_PREFIX:
+            Ref: SsmPrefix
+          METRICS_ENABLED: 'true'
+          POWERTOOLS_METRICS_NAMESPACE: AeroCortex
+          LAZY_RUNTIME: '1'
+      Policies:
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: MissionsTable
+      - S3CrudPolicy:
+          BucketName:
+            Ref: SnapshotBucket
+      - Statement:
+        - Effect: Allow
+          Action:
+          - ssm:GetParameters
+          - ssm:GetParameter
+          Resource:
+            Fn::Sub: arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmPrefix}/*
+      Events:
+        Episodes:
+          Type: SQS
+          Properties:
+            Queue:
+              Fn::GetAtt:
+              - EpisodeQueue
+              - Arn
+            BatchSize: 1
+            FunctionResponseTypes:
+            - ReportBatchItemFailures
+      ImageUri: learningfunction:aerocortex-learning
+    Metadata:
+      DockerContext: C:\Users\ashih\Downloads\AeroCortex
+      DockerTag: aerocortex-learning
+      Dockerfile: Dockerfile.lambda
+      SamResourceId: LearningFunction
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName:
+        Fn::Sub: /aws/lambda/${ApiFunction}
+      RetentionInDays: 14
+  LearningLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName:
+        Fn::Sub: /aws/lambda/${LearningFunction}
+      RetentionInDays: 14
+  StripApiFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name:
+        Fn::Sub: ${AWS::StackName}-strip-api
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Strip /api prefix before forwarding to API Gateway
+        Runtime: cloudfront-js-1.0
+      FunctionCode: "function handler(event) {\n  var request = event.request;\n \
+        \ request.uri = request.uri.replace(/^\\/api(\\/|$)/, '/');\n  return request;\n\
+        }\n"
+  CloudFrontOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name:
+          Fn::Sub: ${AWS::StackName}-dashboard-oac
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+  DashboardDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        Origins:
+        - Id: DashboardS3
+          DomainName:
+            Fn::GetAtt:
+            - DashboardBucket
+            - RegionalDomainName
+          OriginAccessControlId:
+            Fn::GetAtt:
+            - CloudFrontOAC
+            - Id
+          S3OriginConfig: {}
+        - Id: ApiOrigin
+          DomainName:
+            Fn::Sub: ${HttpApi}.execute-api.${AWS::Region}.amazonaws.com
+          CustomOriginConfig:
+            HTTPSPort: 443
+            OriginProtocolPolicy: https-only
+        DefaultCacheBehavior:
+          TargetOriginId: DashboardS3
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+          - GET
+          - HEAD
+          - OPTIONS
+          CachedMethods:
+          - GET
+          - HEAD
+          Compress: true
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+        CacheBehaviors:
+        - PathPattern: /api/*
+          TargetOriginId: ApiOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+          - GET
+          - HEAD
+          - OPTIONS
+          - PUT
+          - PATCH
+          - POST
+          - DELETE
+          CachedMethods:
+          - GET
+          - HEAD
+          Compress: true
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+          FunctionAssociations:
+          - EventType: viewer-request
+            FunctionARN:
+              Fn::GetAtt:
+              - StripApiFunction
+              - FunctionARN
+  DashboardBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket:
+        Ref: DashboardBucket
+      PolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: cloudfront.amazonaws.com
+          Action: s3:GetObject
+          Resource:
+            Fn::Sub: ${DashboardBucket.Arn}/*
+          Condition:
+            StringEquals:
+              AWS:SourceArn:
+                Fn::Sub: arn:aws:cloudfront::${AWS::AccountId}:distribution/${DashboardDistribution}
+  DlqDepthAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: AeroCortex episode DLQ has messages
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+      - Name: QueueName
+        Value:
+          Fn::GetAtt:
+          - EpisodeDLQ
+          - QueueName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+  ApiErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: AeroCortex API Lambda errors
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+      - Name: FunctionName
+        Value:
+          Ref: ApiFunction
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+  OpsDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName:
+        Fn::Sub: ${AWS::StackName}-ops
+      DashboardBody:
+        Fn::Sub: "{\n  \"widgets\": [\n    {\n      \"type\": \"metric\",\n      \"\
+          properties\": {\n        \"title\": \"API Lambda\",\n        \"metrics\"\
+          : [\n          [\"AWS/Lambda\", \"Invocations\", \"FunctionName\", \"${ApiFunction}\"\
+          ],\n          [\".\", \"Errors\", \".\", \".\"],\n          [\".\", \"Duration\"\
+          , \".\", \".\"]\n        ],\n        \"period\": 60,\n        \"stat\":\
+          \ \"Sum\",\n        \"region\": \"${AWS::Region}\"\n      }\n    },\n  \
+          \  {\n      \"type\": \"metric\",\n      \"properties\": {\n        \"title\"\
+          : \"Learning Lambda\",\n        \"metrics\": [\n          [\"AWS/Lambda\"\
+          , \"Invocations\", \"FunctionName\", \"${LearningFunction}\"],\n       \
+          \   [\".\", \"Errors\", \".\", \".\"]\n        ],\n        \"period\": 60,\n\
+          \        \"stat\": \"Sum\",\n        \"region\": \"${AWS::Region}\"\n  \
+          \    }\n    },\n    {\n      \"type\": \"metric\",\n      \"properties\"\
+          : {\n        \"title\": \"Episode DLQ depth\",\n        \"metrics\": [\n\
+          \          [\"AWS/SQS\", \"ApproximateNumberOfMessagesVisible\", \"QueueName\"\
+          , \"${EpisodeDLQ.QueueName}\"]\n        ],\n        \"period\": 60,\n  \
+          \      \"stat\": \"Maximum\",\n        \"region\": \"${AWS::Region}\"\n\
+          \      }\n    },\n    {\n      \"type\": \"metric\",\n      \"properties\"\
+          : {\n        \"title\": \"AeroCortex custom\",\n        \"metrics\": [\n\
+          \          [\"AeroCortex\", \"PipelineLatencyMs\"],\n          [\".\", \"\
+          AnomaliesDetected\"],\n          [\".\", \"EpisodesCommitted\"],\n     \
+          \     [\".\", \"SafetyRejections\"]\n        ],\n        \"period\": 60,\n\
+          \        \"stat\": \"Sum\",\n        \"region\": \"${AWS::Region}\"\n  \
+          \    }\n    }\n  ]\n}\n"
+Outputs:
+  ApiUrl:
+    Description: HTTP API endpoint
+    Value:
+      Fn::Sub: https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com
+  CloudFrontUrl:
+    Description: Dashboard CloudFront URL
+    Value:
+      Fn::Sub: https://${DashboardDistribution.DomainName}
+  DashboardBucketName:
+    Value:
+      Ref: DashboardBucket
+  SnapshotBucketName:
+    Value:
+      Ref: SnapshotBucket
+  MissionsTableName:
+    Value:
+      Ref: MissionsTable
+  StateTableName:
+    Value:
+      Ref: StateTable
+  EpisodeQueueUrl:
+    Value:
+      Ref: EpisodeQueue

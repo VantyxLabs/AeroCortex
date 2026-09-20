@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -13,7 +14,6 @@ from pydantic import BaseModel
 from config import config
 from llm.groq_client import GroqClient
 from llm.ollama_client import OllamaClient
-from memory.document_store import DocumentStore, get_document_store
 from models import UAVTelemetry
 from orchestration.graph import AeroCortexGraph
 from simulation.failure_scenarios import FailureScenarioInjector
@@ -21,21 +21,75 @@ from simulation.mission_simulator import MissionSimulator
 
 logger = logging.getLogger("aerocortex.api")
 
-graph = AeroCortexGraph()
-simulator = MissionSimulator(graph=graph)
-document_store: DocumentStore = get_document_store()
+
+def _lazy_runtime() -> bool:
+    return bool(os.getenv("AWS_EXECUTION_ENV") or os.getenv("LAZY_RUNTIME"))
+
+
+def _build_document_store():
+    try:
+        from cloud.factories import get_document_store as factory_store
+
+        return factory_store()
+    except Exception:
+        from memory.document_store import get_document_store
+
+        return get_document_store()
+
+
+def _build_graph() -> AeroCortexGraph:
+    try:
+        from cloud.factories import get_working_memory
+
+        return AeroCortexGraph(working_memory=get_working_memory())
+    except Exception:
+        return AeroCortexGraph()
+
+
+# Module-level singletons — eager locally (tests / uvicorn), lazy on Lambda.
+graph: Optional[AeroCortexGraph] = None
+simulator: Optional[MissionSimulator] = None
+document_store = None
+
+if not _lazy_runtime():
+    graph = _build_graph()
+    simulator = MissionSimulator(graph=graph)
+    document_store = _build_document_store()
+
+
+def get_graph() -> AeroCortexGraph:
+    global graph, simulator
+    if graph is None:
+        graph = _build_graph()
+    if simulator is None:
+        simulator = MissionSimulator(graph=graph)
+    return graph
+
+
+def get_simulator() -> MissionSimulator:
+    global simulator
+    get_graph()
+    assert simulator is not None
+    return simulator
+
+
+def get_store():
+    global document_store
+    if document_store is None:
+        document_store = _build_document_store()
+    return document_store
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global document_store
-    document_store = get_document_store()
+    store = get_store()
+    g = get_graph()
     try:
-        await document_store.ensure_indexes()
+        await store.ensure_indexes()
     except Exception as exc:
-        logger.warning("Mongo startup failed: %s", exc)
+        logger.warning("Mission store startup failed: %s", exc)
 
-    kg = graph.memory_agent.knowledge_graph
+    kg = g.memory_agent.knowledge_graph
     try:
         engine = kg.reconnect()
         logger.info("Knowledge graph engine after startup: %s", engine)
@@ -43,7 +97,7 @@ async def lifespan(app: FastAPI):
         logger.warning("Neo4j reconnect failed: %s", exc)
 
     try:
-        engine = graph.memory_agent.episodic_memory.vector_store.reconnect()
+        engine = g.memory_agent.episodic_memory.vector_store.reconnect()
         logger.info("Vector store engine after startup: %s", engine)
     except Exception as exc:
         logger.warning("Vector store warmup failed: %s", exc)
@@ -61,11 +115,11 @@ async def lifespan(app: FastAPI):
     yield
 
     try:
-        document_store.close()
+        store.close()
     except Exception:
         pass
     try:
-        graph.memory_agent.knowledge_graph.close()
+        g.memory_agent.knowledge_graph.close()
     except Exception:
         pass
 
@@ -146,6 +200,7 @@ def _pipeline_payload(telemetry: UAVTelemetry, result: Dict[str, Any]) -> Dict[s
         "situation": _dump(situation),
         "persisted": bool(learning.get("persisted", False)),
         "episode_id": learning.get("episode_id"),
+        "learning_mode": learning.get("learning_mode"),
         "planner_source": getattr(planner_plan, "source", None) if planner_plan else None,
         "latency_ms": learning.get("latency_ms") or {
             "retrieval": getattr(memory_context, "retrieval_latency_ms", 0.0) if memory_context else 0.0,
@@ -174,16 +229,42 @@ _HEALTH_CACHE: Dict[str, Any] = {"ts": 0.0, "payload": None, "status_code": 200}
 _HEALTH_TTL_S = 8.0
 
 
+def _mission_store_mode() -> str:
+    try:
+        from cloud.factories import mission_store_mode
+
+        return mission_store_mode()
+    except Exception:
+        return "mongo"
+
+
 def _compute_health() -> tuple[int, Dict[str, Any]]:
     """Blocking dependency checks — always run via asyncio.to_thread."""
-    try:
-        mongo_ok = asyncio.run(document_store.ping())
-    except Exception:
-        mongo_ok = False
+    store = get_store()
+    g = get_graph()
+    mode = _mission_store_mode()
 
-    vs = graph.memory_agent.episodic_memory.vector_store
+    mongo_ok = False
+    dynamo_status = None
+    mongo_status = None
+    if mode == "dynamodb":
+        try:
+            dynamo_status = "ok" if store.health() == "ok" else "down"
+        except Exception:
+            dynamo_status = "down"
+        # DynamoDB-only mission store — do not report Mongo at all
+        mission_ok = dynamo_status == "ok"
+    else:
+        try:
+            mongo_ok = asyncio.run(store.ping())
+        except Exception:
+            mongo_ok = False
+        mongo_status = "ok" if mongo_ok else "down"
+        mission_ok = mongo_ok
+
+    vs = g.memory_agent.episodic_memory.vector_store
     vector_health = vs.health()
-    kg = graph.memory_agent.knowledge_graph
+    kg = g.memory_agent.knowledge_graph
     neo_ok = kg.engine == "neo4j" and kg.ping()
     if not neo_ok:
         kg.reconnect()
@@ -203,24 +284,56 @@ def _compute_health() -> tuple[int, Dict[str, Any]]:
     ollama_status = "ok" if ollama_ok else "fallback_reasoner"
     pine_configured = vector_health["pinecone"] != "unset"
     vector_ok = bool(vector_health.get("ok"))
+    chroma_status = vector_health["chroma"]
 
-    dependencies = {
-        "mongo": "ok" if mongo_ok else "down",
+    bedrock_status = None
+    try:
+        from llm.bedrock_client import BedrockClient, last_call_ok
+
+        bc = BedrockClient()
+        if bc.is_configured:
+            last = last_call_ok()
+            if last is False:
+                bedrock_status = "down"
+            else:
+                bedrock_status = "ok"
+        else:
+            bedrock_status = "unconfigured"
+    except Exception:
+        bedrock_status = None
+
+    dependencies: Dict[str, Any] = {
         "neo4j": "ok" if neo_ok else "fallback_networkx",
         "pinecone": vector_health["pinecone"],
-        "chroma": vector_health["chroma"],
+        "chroma": chroma_status,
         "groq": groq_status,
         "ollama": ollama_status,
     }
+    if mongo_status is not None:
+        dependencies["mongo"] = mongo_status
+    if dynamo_status is not None:
+        dependencies["dynamodb"] = dynamo_status
+    if bedrock_status is not None:
+        dependencies["bedrock"] = bedrock_status
+
     vector_degraded = (
         vector_health["pinecone"] in ("fallback_chroma", "down")
-        or (not pine_configured and vector_health["chroma"] != "ok")
+        or (not pine_configured and chroma_status not in ("ok", "disabled"))
     )
+    # When chroma is intentionally disabled, only pinecone failure degrades vector
+    if chroma_status == "disabled":
+        vector_degraded = pine_configured and vector_health["pinecone"] != "ok"
+
     llm_degraded = (groq.is_configured and not groq_ok) or (not groq.is_configured and not ollama_ok)
-    degraded = (not mongo_ok) or (not neo_ok) or vector_degraded or llm_degraded
+    mission_degraded = not mission_ok
+    # NetworkX embedded fallback is healthy (AWS / offline); only live Neo4j outage when enabled degrades
+    neo_degraded = False
+    degraded = mission_degraded or neo_degraded or vector_degraded or llm_degraded
+    unavailable = (not vector_ok) and (not mission_ok)
     payload = {
-        "status": "unavailable" if (not vector_ok and not mongo_ok) else ("degraded" if degraded else "ok"),
+        "status": "unavailable" if unavailable else ("degraded" if degraded else "ok"),
         "dependencies": dependencies,
+        "mission_store": mode,
         "version": config.system.version,
         "engine": kg.get_summary().get("engine"),
         "vector_engine": vector_health.get("engine"),
@@ -256,7 +369,7 @@ def receive_telemetry(telemetry: UAVTelemetry):
     safety-validated recovery action.
     """
     try:
-        result = graph.run(telemetry)
+        result = get_graph().run(telemetry)
         return _pipeline_payload(telemetry, result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -264,8 +377,9 @@ def receive_telemetry(telemetry: UAVTelemetry):
 
 @app.get("/status")
 def get_system_status():
-    snapshot = graph.working_memory.get_snapshot()
-    kg_summary = graph.memory_agent.knowledge_graph.get_summary()
+    g = get_graph()
+    snapshot = g.working_memory.get_snapshot()
+    kg_summary = g.memory_agent.knowledge_graph.get_summary()
     return {
         "status": "HEALTHY",
         "engine": kg_summary.get("engine"),
@@ -276,11 +390,12 @@ def get_system_status():
 
 @app.get("/memory")
 def get_memory_state():
-    rules = [r.model_dump() for r in graph.memory_agent.semantic_memory.get_all_rules()]
-    kg_summary = graph.memory_agent.knowledge_graph.get_summary()
-    chroma_count = graph.memory_agent.episodic_memory.vector_store.count()
-    vector_engine = getattr(graph.memory_agent.episodic_memory.vector_store, "engine", "chroma")
-    last = graph.memory_agent.last_context
+    g = get_graph()
+    rules = [r.model_dump() for r in g.memory_agent.semantic_memory.get_all_rules()]
+    kg_summary = g.memory_agent.knowledge_graph.get_summary()
+    chroma_count = g.memory_agent.episodic_memory.vector_store.count()
+    vector_engine = getattr(g.memory_agent.episodic_memory.vector_store, "engine", "chroma")
+    last = g.memory_agent.last_context
     candidates = []
     if last:
         for item in last.retrieved_experiences:
@@ -303,6 +418,7 @@ def get_memory_state():
             "top_recommended_action": last.top_recommended_action if last else None,
             "retrieval_latency_ms": last.retrieval_latency_ms if last else 0.0,
             "candidates": candidates,
+            "graph_paths": (last.graph_paths if last else []) or [],
         },
     }
 
@@ -312,8 +428,9 @@ async def get_missions_history(
     limit: int = Query(50, ge=1, le=500),
     skip: int = Query(0, ge=0),
 ):
-    history = await document_store.list_missions(limit=limit, skip=skip)
-    total = await document_store.count_missions()
+    store = get_store()
+    history = await store.list_missions(limit=limit, skip=skip)
+    total = await store.count_missions()
     for item in history:
         if "_id" in item:
             item["_id"] = str(item["_id"])
@@ -322,7 +439,7 @@ async def get_missions_history(
         "limit": limit,
         "skip": skip,
         "history": history,
-        "persisted": document_store.available,
+        "persisted": store.available,
     }
 
 
@@ -334,10 +451,11 @@ def trigger_simulation(req: SimulateRequest):
             detail=f"Invalid scenario. Available: {FailureScenarioInjector.list_available_scenarios()}"
         )
 
+    sim = get_simulator()
     if req.steps == 1:
-        step_res = simulator.run_step(scenario=req.scenario)
+        step_res = sim.run_step(scenario=req.scenario)
         return {"result": step_res}
-    results = simulator.run_full_mission(
+    results = sim.run_full_mission(
         total_steps=req.steps,
         inject_step=req.inject_step,
         scenario=req.scenario
@@ -347,6 +465,6 @@ def trigger_simulation(req: SimulateRequest):
 
 @app.post("/reset")
 def reset_state():
-    graph.working_memory.clear()
-    simulator.reset()
+    get_graph().working_memory.clear()
+    get_simulator().reset()
     return {"status": "SUCCESS", "message": "Working memory and simulation reset successfully"}
