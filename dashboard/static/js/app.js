@@ -54,12 +54,38 @@
     if (!h) return;
     setText("sys-status", h.status || "—");
     const d = h.dependencies || {};
-    setDep("dep-mongo", d.mongo);
+    const tileMongo = $("tile-mongo");
+    if (tileMongo) {
+      if (d.mongo != null && d.mongo !== "disabled") {
+        tileMongo.hidden = false;
+        setDep("dep-mongo", d.mongo);
+      } else {
+        tileMongo.hidden = true;
+      }
+    }
     setDep("dep-neo4j", d.neo4j);
     setDep("dep-pinecone", d.pinecone);
     setDep("dep-groq", d.groq);
     setDep("dep-vector", h.vector_engine || d.chroma);
     setDep("dep-engine", h.engine);
+    const tileDdb = $("tile-dynamodb");
+    if (tileDdb) {
+      if (d.dynamodb != null) {
+        tileDdb.hidden = false;
+        setDep("dep-dynamodb", d.dynamodb);
+      } else {
+        tileDdb.hidden = true;
+      }
+    }
+    const tileBedrock = $("tile-bedrock");
+    if (tileBedrock) {
+      if (d.bedrock != null) {
+        tileBedrock.hidden = false;
+        setDep("dep-bedrock", d.bedrock);
+      } else {
+        tileBedrock.hidden = true;
+      }
+    }
   }
 
   function renderKpis(t) {
@@ -538,8 +564,7 @@
       setError(
         "Health " +
           (h && h.status) +
-          " · mongo " +
-          (d.mongo || "?") +
+          (d.dynamodb != null ? " · dynamodb " + d.dynamodb : d.mongo != null ? " · mongo " + d.mongo : "") +
           " · neo4j " +
           (d.neo4j || "?") +
           " · groq " +

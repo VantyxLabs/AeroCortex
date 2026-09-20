@@ -37,7 +37,15 @@ class AeroCortexGraph:
             semantic_memory=self.memory_agent.semantic_memory,
             knowledge_graph=self.memory_agent.knowledge_graph,
         )
-        self.working_memory = working_memory or WorkingMemory()
+        if working_memory is not None:
+            self.working_memory = working_memory
+        else:
+            try:
+                from cloud.factories import get_working_memory
+
+                self.working_memory = get_working_memory()
+            except Exception:
+                self.working_memory = WorkingMemory()
         
         self.graph = self._build_graph()
 
@@ -210,27 +218,80 @@ class AeroCortexGraph:
         plan = state["final_plan"]
         verdict = state["safety_verdict"]
         outcome = state["mission_outcome"]
-        
-        learning_res = self.learning_agent.process_mission_outcome(
-            telemetry=telemetry,
-            situation=situation,
-            plan=plan,
-            verdict=verdict,
-            success=outcome.success if outcome else True,
-            duration_s=outcome.time_to_stabilize_s if outcome else 20.0,
-            memory_context=state.get("memory_context"),
-            latency_ms={
-                "retrieval": (state.get("memory_context").retrieval_latency_ms
-                              if state.get("memory_context") else 0.0),
-                "planning": (state.get("planner_plan").plan_latency_ms
-                             if state.get("planner_plan") else 0.0),
-                "safety": (state.get("safety_verdict").latency_ms
-                           if state.get("safety_verdict") else 0.0),
-            }
-        )
         logs = state.get("logs", [])
-        if learning_res.get("status") == "SUCCESS":
-            logs.append(f"[{time.strftime('%H:%M:%S')}] [LEARNING] Experience committed: {learning_res.get('episode_id')}")
+
+        latency_ms = {
+            "retrieval": (state.get("memory_context").retrieval_latency_ms
+                          if state.get("memory_context") else 0.0),
+            "planning": (state.get("planner_plan").plan_latency_ms
+                         if state.get("planner_plan") else 0.0),
+            "safety": (state.get("safety_verdict").latency_ms
+                       if state.get("safety_verdict") else 0.0),
+        }
+
+        try:
+            from cloud.factories import learning_mode
+
+            mode = learning_mode()
+        except Exception:
+            mode = "inline"
+
+        if mode == "async" and situation.anomaly_detected and situation.failure_type != "NONE":
+            import uuid as _uuid
+            from cloud.sqs_episodes import publish_episode
+
+            episode_id = str(_uuid.uuid4())
+            # Trim retrieval context for SQS 256KB limit
+            retrieved = []
+            mc = state.get("memory_context")
+            if mc:
+                for item in (mc.retrieved_experiences or [])[:3]:
+                    retrieved.append({
+                        "episode_id": item.episode_id,
+                        "action": item.experience.action,
+                        "final_score": item.final_score,
+                    })
+            payload = {
+                "episode_id": episode_id,
+                "telemetry": telemetry.model_dump(),
+                "situation": situation.model_dump(),
+                "plan": plan.model_dump(),
+                "safety_verdict": verdict.model_dump(),
+                "success": outcome.success if outcome else True,
+                "duration_s": outcome.time_to_stabilize_s if outcome else 20.0,
+                "latency_ms": latency_ms,
+                "retrieved_context": retrieved,
+            }
+            queued = publish_episode(payload, episode_id)
+            learning_res = {
+                "status": "QUEUED" if queued else "FAILED",
+                "episode_id": episode_id,
+                "persisted": False,
+                "learning_mode": "async",
+            }
+            if queued:
+                logs.append(f"[{time.strftime('%H:%M:%S')}] [LEARNING] Experience queued: {episode_id}")
+            else:
+                logs.append(f"[{time.strftime('%H:%M:%S')}] [LEARNING] Queue publish failed; falling back inline")
+                mode = "inline"
+
+        if mode != "async":
+            learning_res = self.learning_agent.process_mission_outcome(
+                telemetry=telemetry,
+                situation=situation,
+                plan=plan,
+                verdict=verdict,
+                success=outcome.success if outcome else True,
+                duration_s=outcome.time_to_stabilize_s if outcome else 20.0,
+                memory_context=state.get("memory_context"),
+                latency_ms=latency_ms,
+            )
+            learning_res["learning_mode"] = learning_res.get("learning_mode") or "inline"
+            if learning_res.get("status") == "SUCCESS":
+                logs.append(
+                    f"[{time.strftime('%H:%M:%S')}] [LEARNING] Experience committed: {learning_res.get('episode_id')}"
+                )
+
         return {"learning_result": learning_res, "logs": logs}
 
     # --- Public Runner ---

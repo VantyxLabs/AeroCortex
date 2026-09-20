@@ -41,6 +41,8 @@ class LearningAgent:
         summary: str = "",
         memory_context: Optional[HybridMemoryContext] = None,
         latency_ms: Optional[Dict[str, float]] = None,
+        forced_episode_id: Optional[str] = None,
+        skip_if_duplicate: bool = False,
     ) -> Dict[str, Any]:
         if not situation.anomaly_detected or situation.failure_type == "NONE":
             return {"status": "SKIPPED", "reason": "No anomaly detected in mission", "persisted": False}
@@ -96,19 +98,62 @@ class LearningAgent:
             "planner_source": plan.source,
             "latency_ms": latency,
         }
+        if forced_episode_id:
+            episode_doc["_id"] = forced_episode_id
+            episode_doc["episode_id"] = forced_episode_id
+
+        # Idempotent store put first (Dynamo conditional / Mongo insert)
+        store = self.document_store if self.document_store is not None else None
+        if store is None:
+            try:
+                from cloud.factories import get_document_store as _factory_store
+
+                store = _factory_store()
+            except Exception:
+                from memory.document_store import get_document_store
+
+                store = get_document_store()
+
+        already = False
+        if skip_if_duplicate and forced_episode_id and hasattr(store, "episode_exists"):
+            already = store.episode_exists(telemetry.mission_id, forced_episode_id)
 
         persisted = False
-        episode_id = None
-        try:
-            store = self.document_store if self.document_store is not None else get_document_store()
-            episode_id = store.insert_episode_sync(episode_doc)
-            persisted = episode_id is not None
-        except Exception:
-            episode_id = None
-            persisted = False
+        episode_id = forced_episode_id
+        if not already:
+            try:
+                if hasattr(store, "last_insert_duplicate"):
+                    store.last_insert_duplicate = False
+                episode_id = store.insert_episode_sync(episode_doc)
+                persisted = episode_id is not None
+                if (
+                    skip_if_duplicate
+                    and persisted
+                    and getattr(store, "last_insert_duplicate", False)
+                ):
+                    already = True
+            except Exception:
+                episode_id = None
+                persisted = False
 
         if not episode_id:
-            episode_id = str(uuid.uuid4())
+            episode_id = forced_episode_id or str(uuid.uuid4())
+
+        if already:
+            # Duplicate SQS delivery — skip non-idempotent reinforcement
+            return {
+                "status": "SUCCESS",
+                "episode_id": episode_id,
+                "persisted": True,
+                "duplicate": True,
+                "failure_type": situation.failure_type,
+                "action": action_name,
+                "outcome": outcome_name,
+                "planner_source": plan.source,
+                "latency_ms": latency,
+                "rule_updated": None,
+                "summary": f"Skipped duplicate reinforcement for {episode_id}",
+            }
 
         experience = EpisodicExperience(
             episode_id=episode_id,

@@ -40,8 +40,62 @@ class MissionSimulator:
         self.generator = TelemetryGenerator(mission_id=mission_id)
         self.graph = graph or AeroCortexGraph()
         self.history: List[Dict[str, Any]] = []
+        self._state_store = None
+        try:
+            from cloud.factories import sim_state_backend
+
+            if sim_state_backend() == "dynamodb":
+                from cloud.dynamo_state import SimulatorStateStore
+
+                self._state_store = SimulatorStateStore()
+                self._restore_generator()
+        except Exception as exc:
+            logger.warning("Simulator state store unavailable: %s", exc)
+
+    def _generator_state(self) -> Dict[str, Any]:
+        g = self.generator
+        return {
+            "mission_id": g.mission_id,
+            "step_idx": g.step_idx,
+            "lat": g.lat,
+            "lon": g.lon,
+            "altitude": g.altitude,
+            "velocity": g.velocity,
+            "heading": g.heading,
+            "battery_level": g.battery_level,
+            "battery_voltage": g.battery_voltage,
+            "waypoint": g.waypoint,
+            "mission_state": g.mission_state,
+            "wind_speed": g.wind_speed,
+            "wind_direction": g.wind_direction,
+            "gps_status": g.gps_status,
+            "gps_accuracy": g.gps_accuracy,
+            "comms_status": g.comms_status,
+            "payload_status": g.payload_status,
+        }
+
+    def _apply_generator_state(self, state: Dict[str, Any]) -> None:
+        g = self.generator
+        for key, value in state.items():
+            if hasattr(g, key):
+                setattr(g, key, value)
+        self.mission_id = g.mission_id
+
+    def _restore_generator(self) -> None:
+        if self._state_store is None:
+            return
+        state = self._state_store.load()
+        if state:
+            self._apply_generator_state(state)
+
+    def _persist_generator(self) -> None:
+        if self._state_store is None:
+            return
+        self._state_store.save(self._generator_state())
 
     def run_step(self, scenario: str = "NORMAL") -> Dict[str, Any]:
+        if self._state_store is not None:
+            self._restore_generator()
         t = self.generator.step(dt=1.0)
 
         if scenario != "NORMAL":
@@ -79,6 +133,7 @@ class MissionSimulator:
             "logs": result.get("logs", []),
         }
         self.history.append(step_record)
+        self._persist_generator()
         return step_record
 
     def run_full_mission(
@@ -99,3 +154,9 @@ class MissionSimulator:
             self.mission_id = new_mission_id
         self.generator = TelemetryGenerator(mission_id=self.mission_id)
         self.history.clear()
+        if self._state_store is not None:
+            try:
+                self._state_store.clear()
+            except Exception as exc:
+                logger.warning("Simulator state clear failed: %s", exc)
+            self._persist_generator()

@@ -52,6 +52,8 @@ def test_healthz_degraded_when_mongo_down(monkeypatch):
     async def mongo_down():
         return False
 
+    telemetry_api._HEALTH_CACHE["payload"] = None
+    telemetry_api._HEALTH_CACHE["ts"] = 0.0
     with TestClient(app) as c:
         monkeypatch.setattr(telemetry_api.document_store, "ping", mongo_down)
         monkeypatch.setattr(
@@ -70,6 +72,8 @@ def test_healthz_503_when_mongo_and_chroma_down(monkeypatch):
     async def mongo_down():
         return False
 
+    telemetry_api._HEALTH_CACHE["payload"] = None
+    telemetry_api._HEALTH_CACHE["ts"] = 0.0
     vs = telemetry_api.graph.memory_agent.episodic_memory.vector_store
     with TestClient(app) as c:
         monkeypatch.setattr(telemetry_api.document_store, "ping", mongo_down)
@@ -98,7 +102,8 @@ def test_compose_api_waits_for_healthy_dependencies():
         assert "healthcheck" in compose["services"][name] or name == "dashboard"
     deps = compose["services"]["api"]["depends_on"]
     assert deps["mongo"]["condition"] == "service_healthy"
-    assert deps["neo4j"]["condition"] == "service_healthy"
+    # neo4j is optional (Aura via .env / local-neo4j profile)
+    assert "neo4j" not in deps or deps["neo4j"]["condition"] == "service_healthy"
     assert deps["ollama"]["condition"] == "service_started"
     assert compose["services"]["api"].get("env_file") in (".env", [".env"])
 

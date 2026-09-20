@@ -22,10 +22,12 @@
       </div>
       <div class="status-line" id="status-line" aria-live="polite">
         <span>System <strong id="sys-status">…</strong></span>
-        <span>Mongo <strong id="dep-mongo">…</strong></span>
+        <span id="tile-mongo">Mongo <strong id="dep-mongo">…</strong></span>
+        <span id="tile-dynamodb" hidden>DynamoDB <strong id="dep-dynamodb">…</strong></span>
         <span>Neo4j <strong id="dep-neo4j">…</strong></span>
         <span>Pinecone <strong id="dep-pinecone">…</strong></span>
         <span>Groq <strong id="dep-groq">…</strong></span>
+        <span id="tile-bedrock" hidden>Bedrock <strong id="dep-bedrock">…</strong></span>
         <span>Vector <strong id="dep-vector">…</strong></span>
         <span>Engine <strong id="dep-engine">…</strong></span>
       </div>
@@ -202,12 +204,30 @@
             if (n) n.textContent = v || "—";
           }
           set("sys-status", (x.j && x.j.status) || "—");
-          set("dep-mongo", d.mongo);
+          var tm = document.getElementById("tile-mongo");
+          if (tm) {
+            if (d.mongo != null && d.mongo !== "disabled") {
+              tm.hidden = false;
+              set("dep-mongo", d.mongo);
+            } else {
+              tm.hidden = true;
+            }
+          }
           set("dep-neo4j", d.neo4j);
           set("dep-pinecone", d.pinecone);
           set("dep-groq", d.groq);
           set("dep-vector", (x.j && x.j.vector_engine) || d.chroma);
           set("dep-engine", x.j && x.j.engine);
+          if (d.dynamodb != null) {
+            var td = document.getElementById("tile-dynamodb");
+            if (td) td.hidden = false;
+            set("dep-dynamodb", d.dynamodb);
+          }
+          if (d.bedrock != null) {
+            var tb = document.getElementById("tile-bedrock");
+            if (tb) tb.hidden = false;
+            set("dep-bedrock", d.bedrock);
+          }
           if (el) {
             el.textContent = x.ok
               ? "Wire OK · /api/healthz · " + ((x.j && x.j.status) || "?")

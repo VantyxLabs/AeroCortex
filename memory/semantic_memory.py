@@ -21,9 +21,41 @@ class SemanticMemory:
         
         self.file_path.parent.mkdir(parents=True, exist_ok=True)
         self.rules: Dict[str, SemanticRule] = {}
+        self._snapshot = None
+        self._snapshot_name = "semantic_rules.json"
+        try:
+            from cloud.factories import get_snapshot_store
+
+            self._snapshot = get_snapshot_store()
+        except Exception:
+            self._snapshot = None
         self._load_or_initialize()
 
+    def maybe_refresh_from_snapshot(self) -> None:
+        if self._snapshot is None:
+            return
+        try:
+            if self._snapshot.needs_refresh(self._snapshot_name):
+                data = self._snapshot.load_json(self._snapshot_name)
+                if isinstance(data, list):
+                    self.rules = {}
+                    for item in data:
+                        rule = SemanticRule(**item)
+                        self.rules[rule.rule_id] = rule
+        except Exception:
+            pass
+
     def _load_or_initialize(self) -> None:
+        if self._snapshot is not None:
+            try:
+                data = self._snapshot.load_json(self._snapshot_name)
+                if isinstance(data, list) and data:
+                    for item in data:
+                        rule = SemanticRule(**item)
+                        self.rules[rule.rule_id] = rule
+                    return
+            except Exception:
+                pass
         try:
             store = get_document_store()
             if store.available:
@@ -133,13 +165,16 @@ class SemanticMemory:
 
     def save(self) -> None:
         try:
+            payload = [r.model_dump() for r in self.rules.values()]
+            if self._snapshot is not None:
+                self._snapshot.save_json(self._snapshot_name, payload)
             with open(self.file_path, "w", encoding="utf-8") as f:
-                json.dump([r.model_dump() for r in self.rules.values()], f, indent=2)
+                json.dump(payload, f, indent=2)
         except Exception:
             pass
         try:
             store = get_document_store()
-            if store.available:
+            if store.available and hasattr(store, "upsert_rule_sync"):
                 for rule in self.rules.values():
                     doc = rule.model_dump()
                     doc["_id"] = rule.rule_id
@@ -152,6 +187,7 @@ class SemanticMemory:
             pass
 
     def match_rules(self, failure_type: str, telemetry: Optional[UAVTelemetry] = None) -> List[SemanticRule]:
+        self.maybe_refresh_from_snapshot()
         matched = []
         for rule in self.rules.values():
             if rule.trigger == failure_type:

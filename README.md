@@ -223,9 +223,14 @@ Set `NEO4J_URI` / `NEO4J_PASSWORD` in `.env` and on Render to the Aura instance.
 | Piece | Host |
 |-------|------|
 | FastAPI + Mongo / Neo4j / Groq / Pinecone | [Render](https://render.com) (Docker) or Railway |
-| Minimalist Monochrome dashboard | [Vercel](https://vercel.com) (static SPA) or local `python main.py --dashboard` |
+| FastAPI serverless (DynamoDB / Bedrock / SQS) | [AWS SAM](docs/AWS_DEPLOY.md) |
+| Minimalist Monochrome dashboard | [Vercel](https://vercel.com), CloudFront, or local `python main.py --dashboard` |
 
 Cloud data services: [MongoDB Atlas](https://www.mongodb.com/atlas) + [Neo4j AuraDB](https://neo4j.com/cloud/aura-free/) + [Pinecone](https://www.pinecone.io/) + [Groq](https://console.groq.com/).
+
+### Deploy on AWS
+
+See **[docs/AWS_DEPLOY.md](docs/AWS_DEPLOY.md)** for the SAM runbook (API Gateway + Lambda, DynamoDB, S3 snapshots, SQS FIFO learning, Bedrock, CloudFront). Spec: [docs/AWS_INTEGRATION_SPEC.md](docs/AWS_INTEGRATION_SPEC.md). AWS mode is opt-in via env vars; unset defaults keep local Mongo / Chroma / inline learning.
 
 The REST API is designed to run **with internet**. Set `GROQ_API_KEY` and `PINECONE_API_KEY` in `.env`. Create a Pinecone serverless index named `aerocortex-episodes` (dimension **64**, metric **cosine**). Groq is the planner; Ollama is not required in the cloud.
 

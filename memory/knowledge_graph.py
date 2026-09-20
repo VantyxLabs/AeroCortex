@@ -145,12 +145,42 @@ class NetworkXBackend:
         self.file_path.parent.mkdir(parents=True, exist_ok=True)
         self.nx_graph = nx.DiGraph()
         self.lr = getattr(config.memory, "reinforcement_rate", 0.2)
+        self._snapshot = None
+        self._snapshot_name = "knowledge_graph.json"
+        try:
+            from cloud.factories import get_snapshot_store
+
+            self._snapshot = get_snapshot_store()
+        except Exception:
+            self._snapshot = None
         self._load_or_seed_graph()
 
     def ping(self) -> bool:
         return True
 
+    def maybe_refresh_from_snapshot(self) -> None:
+        if self._snapshot is None:
+            return
+        try:
+            if self._snapshot.needs_refresh(self._snapshot_name):
+                data = self._snapshot.load_json(self._snapshot_name)
+                if data is not None:
+                    self.nx_graph = nx.node_link_graph(data, edges="links")
+        except Exception:
+            pass
+
     def _load_or_seed_graph(self) -> None:
+        if self._snapshot is not None:
+            try:
+                data = self._snapshot.load_json(self._snapshot_name)
+                if data is not None:
+                    self.nx_graph = nx.node_link_graph(data, edges="links")
+                    return
+                self._seed_default_graph()
+                self.save()
+                return
+            except Exception:
+                pass
         if self.file_path.exists():
             try:
                 with open(self.file_path, "r", encoding="utf-8") as f:
@@ -172,6 +202,8 @@ class NetworkXBackend:
     def save(self) -> None:
         try:
             data = nx.node_link_data(self.nx_graph, edges="links")
+            if self._snapshot is not None:
+                self._snapshot.save_json(self._snapshot_name, data)
             with open(self.file_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
         except Exception:
@@ -595,6 +627,9 @@ class KnowledgeGraph:
     def query_action_relevance(
         self, failure_type: str, condition: Optional[str] = None, k: int = 5
     ) -> List[Dict[str, Any]]:
+        if self.engine == "networkx":
+            self._nx.maybe_refresh_from_snapshot()
+            self.nx_graph = self._nx.nx_graph
         try:
             return self._backend.query_action_relevance(failure_type, condition, k)
         except Exception as exc:

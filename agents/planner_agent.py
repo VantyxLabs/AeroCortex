@@ -43,6 +43,7 @@ class PlannerAgent:
         mission_objective: str = "Preserve UAV integrity and execute safe recovery",
     ) -> RecoveryPlan:
         start_t = time.time()
+        budget = float(__import__("os").getenv("PLANNER_TOTAL_BUDGET_S") or 20)
 
         if not situation.anomaly_detected or situation.failure_type == "NONE":
             return RecoveryPlan(
@@ -60,26 +61,68 @@ class PlannerAgent:
                 plan_latency_ms=round((time.time() - start_t) * 1000, 2),
             )
 
-        groq_plan = self._plan_with_client(
-            self.groq, "groq", telemetry, situation, memory_context, mission_objective
-        )
-        if groq_plan is not _UNREACHABLE:
-            if groq_plan and groq_plan.confidence >= self.min_confidence:
-                groq_plan.source = "groq"
-                groq_plan.plan_latency_ms = round((time.time() - start_t) * 1000, 2)
-                return groq_plan
-        else:
-            ollama_plan = self._plan_with_ollama(
-                telemetry, situation, memory_context, mission_objective
-            )
-            if (
-                ollama_plan
-                and ollama_plan is not _UNREACHABLE
-                and ollama_plan.confidence >= self.min_confidence
-            ):
-                ollama_plan.source = "ollama"
-                ollama_plan.plan_latency_ms = round((time.time() - start_t) * 1000, 2)
-                return ollama_plan
+        try:
+            from cloud.factories import planner_tiers
+
+            tiers = planner_tiers()
+        except Exception:
+            tiers = ["groq", "ollama", "offline"]
+
+        groq_unreachable = False
+        skip_ollama = False
+        for tier in tiers:
+            if (time.time() - start_t) >= budget:
+                break
+            if tier == "bedrock":
+                try:
+                    from llm.bedrock_client import BedrockClient
+
+                    bedrock = BedrockClient()
+                    if not bedrock.is_configured:
+                        continue
+                    plan = self._plan_with_client(
+                        bedrock, "bedrock", telemetry, situation, memory_context, mission_objective
+                    )
+                    if plan is _UNREACHABLE:
+                        continue
+                    if plan and plan.confidence >= self.min_confidence:
+                        plan.source = "bedrock"
+                        plan.plan_latency_ms = round((time.time() - start_t) * 1000, 2)
+                        return plan
+                    continue
+                except Exception:
+                    continue
+            elif tier == "groq":
+                groq_plan = self._plan_with_client(
+                    self.groq, "groq", telemetry, situation, memory_context, mission_objective
+                )
+                if groq_plan is _UNREACHABLE:
+                    groq_unreachable = True
+                    continue
+                if groq_plan and groq_plan.confidence >= self.min_confidence:
+                    groq_plan.source = "groq"
+                    groq_plan.plan_latency_ms = round((time.time() - start_t) * 1000, 2)
+                    return groq_plan
+                # Reachable but low confidence / invalid — skip Ollama (edge-only fallback)
+                skip_ollama = True
+                continue
+            elif tier == "ollama":
+                # Ollama only when Groq is unset or unreachable (original behavior)
+                if skip_ollama or (self.groq.is_configured and not groq_unreachable):
+                    continue
+                ollama_plan = self._plan_with_ollama(
+                    telemetry, situation, memory_context, mission_objective
+                )
+                if (
+                    ollama_plan
+                    and ollama_plan is not _UNREACHABLE
+                    and ollama_plan.confidence >= self.min_confidence
+                ):
+                    ollama_plan.source = "ollama"
+                    ollama_plan.plan_latency_ms = round((time.time() - start_t) * 1000, 2)
+                    return ollama_plan
+            elif tier in ("offline", "offline_reasoner"):
+                break
 
         fallback = self.client.deterministic_reasoner(telemetry, situation, memory_context)
         fallback.source = "offline_reasoner"

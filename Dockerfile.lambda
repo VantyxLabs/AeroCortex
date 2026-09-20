@@ -1,0 +1,26 @@
+# Lambda container image for AeroCortex API + Learning handlers
+FROM public.ecr.aws/lambda/python:3.11
+
+COPY requirements-lambda.txt ${LAMBDA_TASK_ROOT}/requirements-lambda.txt
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements-lambda.txt
+
+# Application package (no matlab/, tests/, dashboard static required for API)
+COPY api ${LAMBDA_TASK_ROOT}/api
+COPY agents ${LAMBDA_TASK_ROOT}/agents
+COPY cloud ${LAMBDA_TASK_ROOT}/cloud
+COPY config ${LAMBDA_TASK_ROOT}/config
+COPY llm ${LAMBDA_TASK_ROOT}/llm
+COPY memory ${LAMBDA_TASK_ROOT}/memory
+COPY models.py ${LAMBDA_TASK_ROOT}/models.py
+COPY observability.py ${LAMBDA_TASK_ROOT}/observability.py
+COPY orchestration ${LAMBDA_TASK_ROOT}/orchestration
+COPY safety ${LAMBDA_TASK_ROOT}/safety
+COPY simulation ${LAMBDA_TASK_ROOT}/simulation
+COPY lambda_handler.py ${LAMBDA_TASK_ROOT}/lambda_handler.py
+COPY learning_handler.py ${LAMBDA_TASK_ROOT}/learning_handler.py
+
+# Seed defaults are generated in-code when S3/file missing (Phase 3)
+RUN mkdir -p ${LAMBDA_TASK_ROOT}/data/knowledge
+
+CMD ["lambda_handler.handler"]

@@ -1,11 +1,9 @@
 import logging
 import math
 import hashlib
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
-
-import chromadb
-from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
 
 from config import PROJECT_ROOT, config
 
@@ -20,15 +18,46 @@ except ImportError:
     ServerlessSpec = None  # type: ignore[misc, assignment]
     PINECONE_AVAILABLE = False
 
+# chromadb is optional — VECTOR_FALLBACK=none never imports it (Lambda)
+chromadb = None  # type: ignore
+Documents = Any
+EmbeddingFunction = object
+Embeddings = Any
+
+
+def _chroma_allowed() -> bool:
+    return (os.getenv("VECTOR_FALLBACK") or "chroma").strip().lower() != "none"
+
+
+def _import_chromadb():
+    global chromadb, Documents, EmbeddingFunction, Embeddings
+    if chromadb is not None:
+        return True
+    if not _chroma_allowed():
+        return False
+    try:
+        import chromadb as _ch
+        from chromadb.api.types import Documents as _D, EmbeddingFunction as _EF, Embeddings as _E
+
+        chromadb = _ch
+        Documents = _D
+        EmbeddingFunction = _EF
+        Embeddings = _E
+        return True
+    except ImportError:
+        logger.warning("chromadb not installed; vector fallback unavailable")
+        return False
+
 
 def empty_query_result() -> Dict[str, Any]:
     return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
 
 
-class DeterministicOfflineEmbedding(EmbeddingFunction[Documents]):
+class DeterministicOfflineEmbedding:
     """
     High-performance, lightweight, deterministic offline embedding function for edge UAVs and Pi 5.
     Generates semantic, normalized 64-dimensional embeddings locally without internet connectivity.
+    Compatible with chromadb EmbeddingFunction protocol when chromadb is installed.
     """
     def __init__(self, dim: int = 64):
         self.dim = dim
@@ -44,9 +73,9 @@ class DeterministicOfflineEmbedding(EmbeddingFunction[Documents]):
     def build_from_config(cls, config: dict) -> "DeterministicOfflineEmbedding":
         return cls(dim=config.get("dim", 64))
 
-    def __call__(self, input: Documents) -> Embeddings:
+    def _embed_texts(self, texts: Any) -> List[List[float]]:
         embeddings: List[List[float]] = []
-        for text in input:
+        for text in texts:
             tokens = text.lower().replace(",", " ").replace(":", " ").replace("-", " ").replace("_", " ").split()
             vec = [0.0] * self.dim
             for i, token in enumerate(tokens):
@@ -59,6 +88,18 @@ class DeterministicOfflineEmbedding(EmbeddingFunction[Documents]):
             norm = math.sqrt(sum(x * x for x in vec)) or 1.0
             embeddings.append([round(x / norm, 6) for x in vec])
         return embeddings
+
+    def __call__(self, input: Any) -> Any:
+        return self._embed_texts(input)
+
+    def embed_query(self, input: Any) -> Any:
+        return self._embed_texts(input)
+
+    def embed_documents(self, input: Any) -> Any:
+        return self._embed_texts(input)
+
+    def is_legacy(self) -> bool:
+        return True
 
 
 def _sanitize_metadata(metadatas: List[Dict[str, Any]], documents: List[str]) -> List[Dict[str, Any]]:
@@ -96,6 +137,25 @@ class VectorBackend(Protocol):
         ...
 
 
+class NullVectorBackend:
+    """No-op vector backend when Chroma is disabled and Pinecone is unavailable."""
+
+    def add_documents(self, ids: List[str], documents: List[str], metadatas: List[Dict[str, Any]]) -> None:
+        return None
+
+    def query(self, query_text: str, n_results: int = 3) -> Dict[str, Any]:
+        return empty_query_result()
+
+    def count(self) -> int:
+        return 0
+
+    def ping(self) -> bool:
+        return False
+
+    def reset(self) -> None:
+        return None
+
+
 class ChromaBackend:
     """Local Chroma persistent / ephemeral collection. Raspberry Pi fallback."""
 
@@ -113,6 +173,9 @@ class ChromaBackend:
         self.persist_path.mkdir(parents=True, exist_ok=True)
         self.collection_name = collection_name or config.memory.chroma_collection
         self.embedding_fn = embedding_fn or DeterministicOfflineEmbedding(dim=64)
+
+        if not _import_chromadb():
+            raise RuntimeError("chromadb is not available (VECTOR_FALLBACK=none or not installed)")
 
         try:
             self.client = chromadb.PersistentClient(path=str(self.persist_path))
@@ -297,13 +360,23 @@ class VectorStore:
     ):
         self.embedding_fn = DeterministicOfflineEmbedding(dim=64)
         self.collection_name = collection_name or config.memory.chroma_collection
-        self._chroma = ChromaBackend(
-            persist_dir=persist_dir,
-            collection_name=self.collection_name,
-            embedding_fn=self.embedding_fn,
-        )
+        self._chroma_disabled = not _chroma_allowed()
+        self._chroma: VectorBackend
+        if self._chroma_disabled:
+            self._chroma = NullVectorBackend()
+        else:
+            try:
+                self._chroma = ChromaBackend(
+                    persist_dir=persist_dir,
+                    collection_name=self.collection_name,
+                    embedding_fn=self.embedding_fn,
+                )
+            except Exception as exc:
+                logger.warning("Chroma unavailable, using null vector backend: %s", exc)
+                self._chroma = NullVectorBackend()
+                self._chroma_disabled = True
         self._pinecone: Optional[VectorBackend] = pinecone_backend
-        self.engine = "chroma"
+        self.engine = "none" if self._chroma_disabled else "chroma"
         self._active: VectorBackend = self._chroma
 
         should_try_cloud = pinecone_backend is not None or (
@@ -338,21 +411,21 @@ class VectorStore:
             except Exception as exc:
                 logger.warning("Pinecone reconnect failed: %s", exc)
         self._active = self._chroma
-        self.engine = "chroma"
+        self.engine = "none" if self._chroma_disabled else "chroma"
         return self.engine
 
     def _failover(self, exc: Exception) -> None:
         if self.engine == "pinecone":
-            logger.warning("Pinecone operation failed, falling back to Chroma: %s", exc)
+            logger.warning("Pinecone operation failed, falling back to local vector backend: %s", exc)
             self._active = self._chroma
-            self.engine = "chroma"
+            self.engine = "none" if self._chroma_disabled else "chroma"
 
     def add_documents(self, ids: List[str], documents: List[str], metadatas: List[Dict[str, Any]]) -> None:
         try:
             self._active.add_documents(ids, documents, metadatas)
         except Exception as exc:
             self._failover(exc)
-            if self.engine == "chroma":
+            if self.engine in ("chroma", "none"):
                 self._chroma.add_documents(ids, documents, metadatas)
             else:
                 raise
@@ -379,6 +452,8 @@ class VectorStore:
             return False
 
     def chroma_ping(self) -> bool:
+        if self._chroma_disabled:
+            return False
         try:
             return bool(self._chroma.ping())
         except Exception:
@@ -402,17 +477,21 @@ class VectorStore:
             pine_status = "ok"
         else:
             self._active = self._chroma
-            self.engine = "chroma"
+            self.engine = "none" if self._chroma_disabled else "chroma"
             if not pine_configured:
                 pine_status = "unset"
             elif chroma_ok:
                 pine_status = "fallback_chroma"
             else:
                 pine_status = "down"
+        if self._chroma_disabled:
+            chroma_status = "disabled"
+        else:
+            chroma_status = "ok" if chroma_ok else "down"
         return {
             "engine": self.engine,
             "pinecone": pine_status,
-            "chroma": "ok" if chroma_ok else "down",
+            "chroma": chroma_status,
             "ok": pine_ok or chroma_ok,
         }
 
@@ -423,4 +502,4 @@ class VectorStore:
             logger.warning("Vector reset failed: %s", exc)
             self._chroma.reset()
             self._active = self._chroma
-            self.engine = "chroma"
+            self.engine = "none" if self._chroma_disabled else "chroma"
